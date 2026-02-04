@@ -2,139 +2,102 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"strings"
 	"sync"
-
-	"github.com/google/uuid"
 )
 
-type session struct {
-	ID           string
-	Participants []string
-	// Events       []midiEvent
-	Listener net.Listener
+type Server struct {
+	clients  map[string]net.Conn // username -> connection
 	mu       sync.RWMutex
+	listener net.Listener
 }
 
-func (s *session) addParticipant(p string) {
+func (s *Server) addClient(username string, conn net.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.Participants = append(s.Participants, p)
-	fmt.Printf("Number of participants: %d\n", len(s.Participants))
+
+	s.clients[username] = conn
+	log.Printf("%s joined server\n", username)
 }
 
-// var users = []string{"A", "B"}
-// var eventTypes = []string{"note_on", "note_off"}
-//
-// type midiEvent struct {
-// 	Type string
-// 	User string
-// 	Note int
-// }
-//
-// func newMidiEvent(t, u string, n int) (midiEvent, error) {
-// 	if !slices.Contains(eventTypes, t) {
-// 		return midiEvent{}, fmt.Errorf("Not a valid event type")
-// 	}
-//
-// 	if !slices.Contains(users, u) {
-// 		return midiEvent{}, fmt.Errorf("Not a valid user")
-// 	}
-//
-// 	return midiEvent{
-// 		Type: t,
-// 		User: u,
-// 		Note: n,
-// 	}, nil
-// }
+func (s *Server) removeClient(username string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-func newSession(addr string) (session, error) {
-	newUUID := uuid.New()
-	id := newUUID.String()
+	delete(s.clients, username)
+	log.Printf("%s left server\n", username)
+}
 
-	ln, err := net.Listen("tcp", ":"+addr)
+func (s *Server) broadcast(from string, message []byte) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for username, conn := range s.clients {
+		if username == from {
+			continue
+		}
+
+		id := append([]byte(from), []byte(": ")...)
+
+		fmtMsg := append(id, message...)
+		conn.Write(fmtMsg)
+		log.Printf("%s: %s\n", from, message)
+	}
+}
+
+func (s *Server) handleConnection(conn net.Conn) {
+	defer conn.Close()
+
+	message, err := readMessage(conn)
 	if err != nil {
-		panic(err)
+		fmt.Printf("Error reading from connection: %v\n", err)
+		return
 	}
 
-	return session{
-		ID:       id,
-		Listener: ln,
-	}, nil
+	username := strings.TrimSpace(string(message))
+
+	s.addClient(username, conn)
+	defer s.removeClient(username)
+
+	for {
+		message, err := readMessage(conn)
+		if err != nil {
+			fmt.Printf("Error reading from connection: %v\n", err)
+			return
+		}
+
+		s.broadcast(username, message)
+	}
+}
+
+func readMessage(conn net.Conn) ([]byte, error) {
+	buffer := make([]byte, 1024)
+	n, err := conn.Read(buffer)
+	if err != nil {
+		return nil, err
+	}
+	return buffer[:n], nil
 }
 
 func main() {
-	// TCP Server
-	s, err := newSession("8080")
+	listener, err := net.Listen("tcp", ":8080")
 	if err != nil {
 		panic(err)
 	}
 
+	srv := &Server{
+		clients:  make(map[string]net.Conn),
+		listener: listener,
+	}
+
 	for {
-		conn, err := s.Listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			panic(err)
 		}
 
-		go handleConnection(conn, &s)
+		go srv.handleConnection(conn)
 	}
 }
-
-// echo tcp
-func handleConnection(conn net.Conn, s *session) {
-	defer conn.Close()
-
-	// username or identifier
-	buffer := make([]byte, 1024)
-	n, err := conn.Read(buffer)
-	if err != nil {
-		fmt.Println("Error reading:", err)
-		return
-	}
-
-	// parse username
-	userName := string(buffer[:n])
-	userName = strings.TrimSpace(userName)
-
-	// add
-	s.addParticipant(userName)
-
-	// echo back
-	_, err = conn.Write(buffer[:n])
-	if err != nil {
-		fmt.Println("Error writing:", err)
-	}
-}
-
-// package main
-//
-// import (
-// 	"fmt"
-// 	"log"
-// 	"net/http"
-// 	"os"
-//
-// 	"github.com/joho/godotenv"
-// )
-//
-// // NOTES
-// // For auth, this is a good library: https://github.com/markbates/goth
-//
-// func main() {
-// 	godotenv.Load()
-// 	port := os.Getenv("PORT")
-// 	if port == "" {
-// 		log.Fatal("Port must be set")
-// 	}
-//
-// 	mux := http.NewServeMux()
-//
-// 	srv := http.Server{
-// 		Addr:    fmt.Sprintf(":%s", port),
-// 		Handler: mux,
-// 	}
-//
-// 	log.Printf("Serving on port: %s\n", port)
-// 	log.Fatal(srv.ListenAndServe())
-// }
