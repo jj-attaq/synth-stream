@@ -9,6 +9,9 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// NOTES
+// For auth, this is a good library: https://github.com/markbates/goth
+
 func main() {
 	godotenv.Load()
 	port := os.Getenv("PORT")
