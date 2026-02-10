@@ -177,6 +177,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	//Create said user:
 	s.addClient(client)
+	defer s.cleanupClient(client)
 	defer s.removeClient(client.Username)
 
 	//pairing logic
@@ -187,7 +188,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	//Conversation loop:
 	for {
-		// session := client.Session
 		message, err := readMessage(conn)
 		if err != nil {
 			fmt.Printf("Error reading from connection: %v\n", err)
@@ -195,50 +195,29 @@ func (s *Server) handleConnection(conn net.Conn) {
 		}
 
 		s.routeToPartner(client, message)
+	}
+}
 
-		//Delete session if both disconnect.
-		// if session.Client1 == nil && session.Client2 == nil {
-		// 	s.removeSession(client.Session)
-		// 	log.Printf("session: %s for users: %s, %s removed\n", session.ID, session.Client1.Username, session.Client2.Username)
-		// }
+func (s *Server) cleanupClient(client *Client) { //The client that has been disconnected
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-		// //One client has disconnected from the session
-		// if session.Client1 == nil || session.Client2 == nil {
-		// 	var remainingClient *Client
-		// 	var disconnectedClient *Client
-		// 	if client == session.Client1 {
-		// 		log.Printf("%s has been disconnected from the session\n", session.Client2.Username)
-		// 		remainingClient = session.Client2
-		// 		disconnectedClient = session.Client1
-		// 	}
-		// 	log.Printf("%s has been disconnected from the session\n", session.Client1.Username)
-		// 	remainingClient = session.Client1
-		// 	disconnectedClient = session.Client2
-		//
-		// 	//Need to add better connection experience at start, usernames associated with session IDs
-		// 	log.Printf("Would you like to disconnect as well y/n?\n")
-		// 	confirmation, err := readMessage(conn)
-		// 	if err != nil {
-		// 		fmt.Printf("Error reading from connection: %v\n", err)
-		// 		return
-		// 	}
-		//
-		// 	if string(confirmation) == "y" {
-		// 		s.removeClient(remainingClient.Username)
-		// 		s.removeSession(remainingClient.Session)
-		// 		return
-		// 	} else {
-		// 		log.Printf("Session will remain active until %s reconnects to session or until timeout\n", disconnectedClient.Username)
-		// 		timer := time.NewTimer(5 * time.Second)
-		// 		<-timer.C // Wait for the timer to fire
-		// 		if session.Client1 != nil && session.Client2 != nil {
-		// 			continue
-		// 		}
-		//
-		// 		s.removeClient(remainingClient.Username)
-		// 		s.removeSession(remainingClient.Session)
-		// 	}
-		// }
+	// If they're the waiting client, clear it
+	if client == s.waitingClient {
+		s.waitingClient = nil
+		return
+	}
+	// If they have a session, handle it
+	if client.Session != nil {
+		partner, _ := client.Session.GetPartner(client)
+
+		msg := append([]byte(client.Username), []byte(" has been disconnected\n")...)
+		partner.Conn.Write(msg)
+
+		s.removeSessionLocked(client.Session)
+		client.Session = nil
+		partner.Session = nil
+		return
 	}
 }
 
