@@ -6,6 +6,10 @@ import (
 	"net"
 )
 
+// The Protocol expecets a 3 byte Header, the first byte determines the type of
+// message, the next two bytes annouce payload length, since midi can be of
+// variable size
+
 const (
 	TypeText  = 0x01
 	TypeMidi  = 0x10
@@ -24,26 +28,24 @@ type Packet struct {
 }
 
 type Header struct {
-	Type   byte
-	Length uint16
+	Type byte
 }
 
-func (h Header) Marshal() ([]byte, error) {
-	buf := make([]byte, 3)
-	if _, ok := validTypes[h.Type]; !ok {
+func (p Packet) Marshal() ([]byte, error) {
+	if _, ok := validTypes[p.Header.Type]; !ok {
 		return nil, errors.New("invalid type")
 	}
 
-	buf[0] = h.Type
-	binary.BigEndian.PutUint16(buf[1:], h.Length)
+	payloadLen := len(p.Payload)
+	totalLen := 3 + payloadLen
+
+	buf := make([]byte, totalLen)
+	buf[0] = p.Header.Type
+
+	binary.BigEndian.PutUint16(buf[1:3], uint16(payloadLen))
+	copy(buf[3:], p.Payload)
 
 	return buf, nil
 }
-
-func (h Header) Unmarshal(data []byte, v any) error
-
-func (h Header) Read(p []byte) (n int, err error)
-
-func (h Header) Write(p []byte) (n int, err error)
 
 func WriteMessage(conn net.Conn, msgType byte, payload []byte)
