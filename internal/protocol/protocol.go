@@ -48,4 +48,22 @@ func (p Packet) Marshal() ([]byte, error) {
 	return buf, nil
 }
 
+func Unmarshal(v []byte) (Packet, error) {
+	buf := v[0:2]
+	if _, ok := validTypes[buf[0]]; !ok {
+		return Packet{}, errors.New("invalid type")
+	}
+
+	header := Header{
+		Type: buf[0],
+	}
+
+	payloadLen := binary.BigEndian.Uint16(v[1:3])
+
+	return Packet{
+		Header:  header,
+		Payload: make([]byte, payloadLen),
+	}, nil
+}
+
 func WriteMessage(conn net.Conn, msgType byte, payload []byte)
