@@ -26,15 +26,31 @@ func main() {
 	midi.PrintDevices()
 
 	scanner := bufio.NewScanner(os.Stdin)
+
 	fmt.Print("Select input device number: ")
 	scanner.Scan()
-	portNumber, err := strconv.Atoi(scanner.Text())
+	inPortNumber, err := strconv.Atoi(scanner.Text())
 	if err != nil {
 		log.Fatalf("invalid port number: %v", err)
 	}
 
-	stop, err := midi.CaptureInput(portNumber, func(data []byte) {
-		fmt.Printf("MIDI: % x\n", data)
+	fmt.Print("Select output device number: ")
+	scanner.Scan()
+	outPortNumber, err := strconv.Atoi(scanner.Text())
+	if err != nil {
+		log.Fatalf("invalid port number: %v", err)
+	}
+
+	send, err := midi.OpenOutput(outPortNumber)
+	if err != nil {
+		log.Fatalf("could not open output: %v", err)
+	}
+
+	stop, err := midi.CaptureInput(inPortNumber, func(data []byte) {
+		// Local monitoring: play your own input back through the output
+		if err := send(data); err != nil {
+			log.Printf("midi send error: %v", err)
+		}
 	})
 	if err != nil {
 		log.Fatalf("could not start capture: %v", err)

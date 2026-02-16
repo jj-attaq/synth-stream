@@ -16,6 +16,7 @@ func CaptureInput(portNumber int, onMessage func([]byte)) (func(), error) {
 	}
 
 	stop, err := gomidi.ListenTo(inPort, func(msg gomidi.Message, timestampms int32) {
+		// fmt.Printf("raw: % x\n", msg.Bytes())
 		if msg.Is(gomidi.RealTimeMsg) {
 			return
 		}
