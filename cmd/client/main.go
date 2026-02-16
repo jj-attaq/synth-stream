@@ -6,8 +6,13 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 
+	"github.com/jj-attaq/synth-stream/internal/midi"
 	"github.com/jj-attaq/synth-stream/internal/protocol"
+
+	gomidi "gitlab.com/gomidi/midi/v2"
+	_ "gitlab.com/gomidi/midi/v2/drivers/rtmididrv"
 )
 
 func main() {
@@ -16,6 +21,24 @@ func main() {
 		os.Exit(1)
 	}
 	username := os.Args[1]
+
+	defer gomidi.CloseDriver()
+	midi.PrintDevices()
+
+	// Device selection
+	scanner := bufio.NewScanner(os.Stdin)
+	fmt.Print("Select input device number: ")
+	scanner.Scan()
+	portNumber, err := strconv.Atoi(scanner.Text())
+	if err != nil {
+		log.Fatalf("invalid port number: %v", err)
+	}
+
+	stop, err := midi.CaptureInput(portNumber)
+	if err != nil {
+		log.Fatalf("could not start capture: %v", err)
+	}
+	defer stop()
 
 	conn, err := net.Dial("tcp", "localhost:8080")
 	if err != nil {
@@ -41,7 +64,6 @@ func main() {
 	}()
 
 	// Read from stdin, send each line as TypeText
-	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Print("> ")
 	for scanner.Scan() {
 		if err := protocol.WriteMessage(conn, protocol.TypeText, scanner.Bytes()); err != nil {

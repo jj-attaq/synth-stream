@@ -89,34 +89,16 @@ func (s *Server) Start() {
 	}
 }
 
-// Add Session
-func (s *Server) addSession(session *Session) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.sessions[session.ID] = session
-	log.Printf("session %s created\n", session.ID)
-}
 func (s *Server) addSessionLocked(session *Session) {
-	//Same as addSession but s.mu is already locked
 	s.sessions[session.ID] = session
 	log.Printf("session %s created\n", session.ID)
 }
 
-// Remove Session
-func (s *Server) removeSession(session *Session) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	delete(s.sessions, session.ID)
-	log.Printf("session %s deleted", session.ID)
-}
 func (s *Server) removeSessionLocked(session *Session) {
 	delete(s.sessions, session.ID)
 	log.Printf("session %s deleted", session.ID)
 }
 
-// Add Client
 func (s *Server) registerClient(client *Client) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -133,15 +115,10 @@ func (s *Server) addClientLocked(client *Client) {
 	log.Printf("%s joined server\n", client.Username)
 }
 
-// Remove Client
 func (s *Server) removeClient(username string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	delete(s.clients, username)
-	log.Printf("%s left server\n", username)
-}
-func (s *Server) removeClientLocked(username string) {
 	delete(s.clients, username)
 	log.Printf("%s left server\n", username)
 }
@@ -156,15 +133,14 @@ func (s *Server) routeToPartner(client *Client, packet protocol.Packet) error {
 		}
 
 		// Send message to partner's Conn
-		id := append([]byte(client.Username), []byte(": ")...)
+		prefix := append([]byte(client.Username), []byte(": ")...)
 
-		fmtMsg := append(id, packet.Payload...)
+		fmtMsg := append(prefix, packet.Payload...)
 		if err := protocol.WriteMessage(partner.Conn, packet.Type, fmtMsg); err != nil {
 			return err
 		}
 		log.Printf("%s: %s", client.Username, packet.Payload)
 	} else {
-		// If no session, maybe log "waiting for partner"
 		log.Printf("waiting for partner\n")
 		return nil
 	}
@@ -190,7 +166,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	username := strings.TrimSpace(string(message.Payload))
 
-	if errMsg := s.validateUsername(username); errMsg != "" {
+	if errMsg := validateUsername(username); errMsg != "" {
 		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:"+errMsg))
 		return
 	}
@@ -201,7 +177,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 		return
 	}
 
-	//Create said user:
 	if errMsg := s.registerClient(client); errMsg != "" {
 		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:"+errMsg))
 		return
@@ -261,7 +236,7 @@ func (s *Server) cleanupClient(client *Client) { //The client that has been disc
 
 // validateUsername checks if a username is valid
 // Returns an error message to send back to the client, or "" if valid.
-func (s *Server) validateUsername(username string) string {
+func validateUsername(username string) string {
 	if !usernameRegex.MatchString(username) {
 		return "username must be at least 4 characters and contain only letters, numbers, underscores, or hyphens"
 	}
