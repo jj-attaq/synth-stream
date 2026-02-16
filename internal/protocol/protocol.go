@@ -2,14 +2,10 @@ package protocol
 
 import (
 	"encoding/binary"
-	"errors"
+	"fmt"
 	"io"
 	"net"
 )
-
-// The Protocol expects a 3 byte Header, the first byte determines the type of
-// message, the next two bytes annouce payload length, since midi can be of
-// variable size
 
 // Protocol wire format:
 //   Byte 0:    Message type (TypeText, TypeMidi, TypeAudio)
@@ -35,95 +31,77 @@ type Packet struct {
 
 func (p Packet) Marshal() ([]byte, error) {
 	if _, ok := validTypes[p.Type]; !ok {
-		return nil, errors.New("invalid type")
+		return nil, fmt.Errorf("invalid message type: 0x%02X", p.Type)
 	}
 
 	payloadLen := len(p.Payload)
-	totalLen := 3 + payloadLen
+	buf := make([]byte, 3+payloadLen)
 
-	buf := make([]byte, totalLen)
 	buf[0] = p.Type
-
 	binary.BigEndian.PutUint16(buf[1:3], uint16(payloadLen))
 	copy(buf[3:], p.Payload)
 
 	return buf, nil
 }
 
-func Unmarshal(v []byte) (Packet, error) {
-	// Minimum header length
-	if len(v) < 3 {
-		return Packet{}, errors.New("data too short for header")
+func Unmarshal(data []byte) (Packet, error) {
+	if len(data) < 3 {
+		return Packet{}, fmt.Errorf("data too short for header")
 	}
 
-	// Validate type
-	// v[0] is the Type, v[1:3] is the payload length
-	msgType := v[0]
+	msgType := data[0]
 	if _, ok := validTypes[msgType]; !ok {
-		return Packet{}, errors.New("invalid type")
+		return Packet{}, fmt.Errorf("invalid message type: 0x%02X", msgType)
 	}
 
-	payloadLen := binary.BigEndian.Uint16(v[1:3])
-
-	if len(v) < 3+int(payloadLen) {
-		return Packet{}, errors.New("data too short for announced payload")
+	payloadLen := binary.BigEndian.Uint16(data[1:3])
+	if len(data) < 3+int(payloadLen) {
+		return Packet{}, fmt.Errorf("data too short: expected %d bytes, got %d", 3+payloadLen, len(data))
 	}
-
-	payload := v[3 : 3+payloadLen]
 
 	return Packet{
 		Type:    msgType,
-		Payload: payload,
+		Payload: data[3 : 3+payloadLen],
 	}, nil
 }
 
 func WriteMessage(conn net.Conn, msgType byte, payload []byte) error {
-	// 1. Create a packet
-	packet := Packet{
-		Type:    msgType,
-		Payload: payload,
-	}
-	// 2. Marshal it to bytes
+	packet := Packet{Type: msgType, Payload: payload}
 	data, err := packet.Marshal()
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal failed: %w", err)
 	}
-	// 3. Write those bytes to conn
-	_, err = conn.Write(data)
-	if err != nil {
-		return err
+
+	if _, err := conn.Write(data); err != nil {
+		return fmt.Errorf("write failed: %w", err)
 	}
-	// 4. Return any error
+
 	return nil
 }
 
 func ReadMessage(conn net.Conn) (Packet, error) {
-	// Step 1: Read header (how many bytes?)
-	headerBuf := make([]byte, 3)
-	_, err := io.ReadFull(conn, headerBuf)
-	if err != nil {
-		return Packet{}, errors.New("could not read header")
-	}
-	// Step 2: Parse the length from header
-	payloadLen := binary.BigEndian.Uint16(headerBuf[1:3])
-
-	payloadBuf := make([]byte, payloadLen)
-
-	// Step 3: Read the payload (how many bytes?)
-	_, err = io.ReadFull(conn, payloadBuf)
-	if err != nil {
-		return Packet{}, errors.New("failed to read payload")
+	// Read 3-byte header
+	header := make([]byte, 3)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return Packet{}, fmt.Errorf("read header failed: %w", err)
 	}
 
-	// Step 4: Unmarshal everything
-	packetBuf := make([]byte, 3+payloadLen)
-	copy(packetBuf[:3], headerBuf)
-	copy(packetBuf[3:], payloadBuf)
-
-	packet, err := Unmarshal(packetBuf)
-
-	if err != nil {
-		return Packet{}, err
+	// Parse payload length and read payload
+	payloadLen := binary.BigEndian.Uint16(header[1:3])
+	payload := make([]byte, payloadLen)
+	if _, err := io.ReadFull(conn, payload); err != nil {
+		return Packet{}, fmt.Errorf("read payload failed: %w", err)
 	}
+
+	// Combine and unmarshal
+	fullPacket := make([]byte, 3+payloadLen)
+	copy(fullPacket[:3], header)
+	copy(fullPacket[3:], payload)
+
+	packet, err := Unmarshal(fullPacket)
+	if err != nil {
+		return Packet{}, fmt.Errorf("unmarshal failed: %w", err)
+	}
+
 	return packet, nil
 }

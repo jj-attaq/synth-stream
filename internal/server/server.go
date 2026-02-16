@@ -1,14 +1,20 @@
 package server
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/google/uuid"
+	"github.com/jj-attaq/synth-stream/internal/protocol"
 )
+
+var usernameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{4,}$`)
 
 type Server struct {
 	clients       map[string]*Client
@@ -23,8 +29,11 @@ func (s *Server) pairClients(client *Client) error {
 	defer s.mu.Unlock()
 
 	if s.waitingClient == nil {
-
 		s.waitingClient = client
+		if err := protocol.WriteMessage(s.waitingClient.Conn, protocol.TypeText, []byte("waiting...")); err != nil {
+			return fmt.Errorf("could not send waiting message")
+		}
+
 		log.Printf("%s is waiting to be paired\n", s.waitingClient.Username)
 		return nil
 	}
@@ -37,6 +46,14 @@ func (s *Server) pairClients(client *Client) error {
 	session, err := NewSession(id.String(), s.waitingClient, client)
 	if err != nil {
 		return fmt.Errorf("new session not created")
+	}
+
+	if err := protocol.WriteMessage(client.Conn, protocol.TypeText, []byte("paired "+s.waitingClient.Username)); err != nil {
+		return fmt.Errorf("could not send pairing message")
+	}
+
+	if err := protocol.WriteMessage(s.waitingClient.Conn, protocol.TypeText, []byte("paired "+client.Username)); err != nil {
+		return fmt.Errorf("could not send pairing message")
 	}
 
 	s.waitingClient = nil
@@ -100,12 +117,16 @@ func (s *Server) removeSessionLocked(session *Session) {
 }
 
 // Add Client
-func (s *Server) addClient(client *Client) {
+func (s *Server) registerClient(client *Client) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.clients[client.Username] = client
-	log.Printf("%s joined server\n", client.Username)
+	if _, taken := s.clients[client.Username]; taken {
+		return "username already taken"
+	}
+
+	s.addClientLocked(client)
+	return ""
 }
 func (s *Server) addClientLocked(client *Client) {
 	s.clients[client.Username] = client
@@ -125,7 +146,7 @@ func (s *Server) removeClientLocked(username string) {
 	log.Printf("%s left server\n", username)
 }
 
-func (s *Server) routeToPartner(client *Client, message []byte) error {
+func (s *Server) routeToPartner(client *Client, packet protocol.Packet) error {
 	// Check if client has a session
 	if client.Session != nil {
 		// If yes, find the partner (the OTHER client in the session)
@@ -137,13 +158,11 @@ func (s *Server) routeToPartner(client *Client, message []byte) error {
 		// Send message to partner's Conn
 		id := append([]byte(client.Username), []byte(": ")...)
 
-		fmtMsg := append(id, message...)
-		_, err = partner.Conn.Write(fmtMsg)
-		if err != nil {
-			// log.Printf("Error sending to %s: %v\n", partner.Username, err)
+		fmtMsg := append(id, packet.Payload...)
+		if err := protocol.WriteMessage(partner.Conn, packet.Type, fmtMsg); err != nil {
 			return err
 		}
-		log.Printf("%s: %s", client.Username, message)
+		log.Printf("%s: %s", client.Username, packet.Payload)
 	} else {
 		// If no session, maybe log "waiting for partner"
 		log.Printf("waiting for partner\n")
@@ -157,17 +176,25 @@ func (s *Server) routeToPartner(client *Client, message []byte) error {
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	//IDing of user:
-	//proper identification of client will need to be created/called here
-	//currently no security and a user just puts in their name, there isn't
-	//even a prompt
-	message, err := readMessage(conn)
+	message, err := protocol.ReadMessage(conn)
 	if err != nil {
-		fmt.Printf("Error reading from connection: %v\n", err)
+		if !errors.Is(err, io.EOF) {
+			log.Printf("read error from %s: %v", conn.RemoteAddr(), err)
+		}
+		return
+	}
+	if message.Type != protocol.TypeText {
+		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:first message must be text"))
 		return
 	}
 
-	username := strings.TrimSpace(string(message))
+	username := strings.TrimSpace(string(message.Payload))
+
+	if errMsg := s.validateUsername(username); errMsg != "" {
+		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:"+errMsg))
+		return
+	}
+
 	client, err := NewClient(username, conn)
 	if err != nil {
 		log.Printf("Could not create client for user: %s", username)
@@ -175,9 +202,17 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 
 	//Create said user:
-	s.addClient(client)
+	if errMsg := s.registerClient(client); errMsg != "" {
+		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:"+errMsg))
+		return
+	}
 	defer s.cleanupClient(client)
 	defer s.removeClient(client.Username)
+
+	if err := protocol.WriteMessage(conn, protocol.TypeText, []byte("welcome "+client.Username)); err != nil {
+		log.Printf("could not welcome user")
+		return
+	}
 
 	//pairing logic
 	err = s.pairClients(client)
@@ -187,9 +222,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	//Conversation loop:
 	for {
-		message, err := readMessage(conn)
+		message, err := protocol.ReadMessage(conn)
 		if err != nil {
-			fmt.Printf("Error reading from connection: %v\n", err)
+			if !errors.Is(err, io.EOF) {
+				log.Printf("read error from %s: %v", client.Username, err)
+			}
 			return
 		}
 
@@ -211,7 +248,9 @@ func (s *Server) cleanupClient(client *Client) { //The client that has been disc
 		partner, _ := client.Session.GetPartner(client)
 
 		msg := append([]byte(client.Username), []byte(" has been disconnected\n")...)
-		partner.Conn.Write(msg)
+		if err := protocol.WriteMessage(partner.Conn, protocol.TypeText, msg); err != nil {
+			log.Printf("failed to notify %s of disconnect: %v", partner.Username, err)
+		}
 
 		s.removeSessionLocked(client.Session)
 		client.Session = nil
@@ -220,11 +259,12 @@ func (s *Server) cleanupClient(client *Client) { //The client that has been disc
 	}
 }
 
-func readMessage(conn net.Conn) ([]byte, error) {
-	buffer := make([]byte, 1024)
-	n, err := conn.Read(buffer)
-	if err != nil {
-		return nil, err
+// validateUsername checks if a username is valid
+// Returns an error message to send back to the client, or "" if valid.
+func (s *Server) validateUsername(username string) string {
+	if !usernameRegex.MatchString(username) {
+		return "username must be at least 4 characters and contain only letters, numbers, underscores, or hyphens"
 	}
-	return buffer[:n], nil
+
+	return ""
 }
