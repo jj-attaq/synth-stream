@@ -4,12 +4,11 @@ import (
 	"bufio"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"strconv"
 
+	"github.com/jj-attaq/synth-stream/internal/client"
 	"github.com/jj-attaq/synth-stream/internal/midi"
-	"github.com/jj-attaq/synth-stream/internal/protocol"
 
 	gomidi "gitlab.com/gomidi/midi/v2"
 	_ "gitlab.com/gomidi/midi/v2/drivers/rtmididrv"
@@ -22,10 +21,10 @@ func main() {
 	}
 	username := os.Args[1]
 
+	// MIDI setup
 	defer gomidi.CloseDriver()
 	midi.PrintDevices()
 
-	// Device selection
 	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Print("Select input device number: ")
 	scanner.Scan()
@@ -34,42 +33,25 @@ func main() {
 		log.Fatalf("invalid port number: %v", err)
 	}
 
-	stop, err := midi.CaptureInput(portNumber)
+	stop, err := midi.CaptureInput(portNumber, func(data []byte) {
+		fmt.Printf("MIDI: % x\n", data)
+	})
 	if err != nil {
 		log.Fatalf("could not start capture: %v", err)
 	}
 	defer stop()
 
-	conn, err := net.Dial("tcp", "localhost:8080")
+	// Server connection
+	c, err := client.New(username, "localhost:8080")
 	if err != nil {
 		log.Fatalf("could not connect: %v", err)
 	}
-	defer conn.Close()
+	defer c.Close()
 
-	// Send username as handshake
-	if err := protocol.WriteMessage(conn, protocol.TypeText, []byte(username)); err != nil {
-		log.Fatalf("could not send username: %v", err)
+	if err := c.Handshake(); err != nil {
+		log.Fatalf("handshake failed: %v", err)
 	}
 
-	// Read incoming messages in background
-	go func() {
-		for {
-			packet, err := protocol.ReadMessage(conn)
-			if err != nil {
-				fmt.Println("\ndisconnected from server")
-				os.Exit(0)
-			}
-			fmt.Printf("\r%s\n> ", string(packet.Payload))
-		}
-	}()
-
-	// Read from stdin, send each line as TypeText
-	fmt.Print("> ")
-	for scanner.Scan() {
-		if err := protocol.WriteMessage(conn, protocol.TypeText, scanner.Bytes()); err != nil {
-			log.Printf("could not send message")
-			return
-		}
-		fmt.Print("> ")
-	}
+	go c.ReadMessages()
+	c.ChatLoop()
 }
