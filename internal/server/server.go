@@ -132,14 +132,16 @@ func (s *Server) routeToPartner(client *Client, packet protocol.Packet) error {
 			return err
 		}
 
-		// Send message to partner's Conn
-		prefix := append([]byte(client.Username), []byte(": ")...)
+		payload := packet.Payload
+		if packet.Type == protocol.TypeText {
+			prefix := append([]byte(client.Username), []byte(": ")...)
+			payload = append(prefix, payload...)
+		}
 
-		fmtMsg := append(prefix, packet.Payload...)
-		if err := protocol.WriteMessage(partner.Conn, packet.Type, fmtMsg); err != nil {
+		if err := protocol.WriteMessage(partner.Conn, packet.Type, payload); err != nil {
 			return err
 		}
-		log.Printf("%s: %s", client.Username, packet.Payload)
+		log.Printf("%s sent %d bytes (type 0x%02x)", client.Username, len(packet.Payload), packet.Type)
 	} else {
 		log.Printf("waiting for partner\n")
 		return nil

@@ -46,17 +46,6 @@ func main() {
 		log.Fatalf("could not open output: %v", err)
 	}
 
-	stop, err := midi.CaptureInput(inPortNumber, func(data []byte) {
-		// Local monitoring: play your own input back through the output
-		if err := send(data); err != nil {
-			log.Printf("midi send error: %v", err)
-		}
-	})
-	if err != nil {
-		log.Fatalf("could not start capture: %v", err)
-	}
-	defer stop()
-
 	// Server connection
 	c, err := client.New(username, "localhost:8080")
 	if err != nil {
@@ -64,9 +53,24 @@ func main() {
 	}
 	defer c.Close()
 
+	c.SetMidiSend(send)
+
 	if err := c.Handshake(); err != nil {
 		log.Fatalf("handshake failed: %v", err)
 	}
+
+	stop, err := midi.CaptureInput(inPortNumber, func(data []byte) {
+		if err := send(data); err != nil {
+			log.Printf("midi local playback error: %v", err)
+		}
+		if err := c.SendMidi(data); err != nil {
+			log.Printf("midi network send error: %v", err)
+		}
+	})
+	if err != nil {
+		log.Fatalf("could not start capture: %v", err)
+	}
+	defer stop()
 
 	go c.ReadMessages()
 	c.ChatLoop()

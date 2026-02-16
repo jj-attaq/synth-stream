@@ -16,6 +16,7 @@ type Client struct {
 	conn     net.Conn
 	username string
 	scanner  *bufio.Scanner
+	midiSend func([]byte) error
 }
 
 func New(username string, address string) (*Client, error) {
@@ -29,6 +30,10 @@ func New(username string, address string) (*Client, error) {
 		username: username,
 		scanner:  bufio.NewScanner(os.Stdin),
 	}, nil
+}
+
+func (c *Client) SetMidiSend(send func([]byte) error) {
+	c.midiSend = send
 }
 
 func (c *Client) Close() {
@@ -52,8 +57,27 @@ func (c *Client) ReadMessages() {
 			fmt.Println("\ndisconnected from server")
 			os.Exit(0)
 		}
-		fmt.Printf("\r%s\n> ", string(packet.Payload))
+
+		switch packet.Type {
+		case protocol.TypeMidi:
+			// fmt.Printf("\rReceived MIDI: % x\n> ", packet.Payload)
+			if c.midiSend != nil {
+				if err := c.midiSend(packet.Payload); err != nil {
+					log.Printf("midi playback error: %v", err)
+				}
+			}
+		case protocol.TypeText:
+			fmt.Printf("\r%s\n> ", string(packet.Payload))
+		}
 	}
+}
+
+// SendMidi sends raw MIDI bytes to the partner over the network.
+func (c *Client) SendMidi(data []byte) error {
+	if err := protocol.WriteMessage(c.conn, protocol.TypeMidi, data); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *Client) ChatLoop() {
