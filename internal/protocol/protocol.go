@@ -16,12 +16,14 @@ const (
 	TypeText  = 0x01
 	TypeMidi  = 0x10
 	TypeAudio = 0x20
+	TypePing  = 0x30
 )
 
 var validTypes = map[byte]struct{}{
 	TypeText:  {},
 	TypeMidi:  {},
 	TypeAudio: {},
+	TypePing:  {},
 }
 
 type Packet struct {
@@ -55,8 +57,8 @@ func Unmarshal(data []byte) (Packet, error) {
 	}
 
 	payloadLen := binary.BigEndian.Uint16(data[1:3])
-	if len(data) < 3+int(payloadLen) {
-		return Packet{}, fmt.Errorf("data too short: expected %d bytes, got %d", 3+payloadLen, len(data))
+	if len(data) != 3+int(payloadLen) {
+		return Packet{}, fmt.Errorf("data length mismatch: expected %d bytes, got %d", 3+payloadLen, len(data))
 	}
 
 	return Packet{

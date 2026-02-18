@@ -207,6 +207,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 			return
 		}
 
+		if message.Type == protocol.TypePing {
+			protocol.WriteMessage(conn, protocol.TypePing, message.Payload)
+			continue
+		}
+
 		s.routeToPartner(client, message)
 	}
 }

@@ -73,5 +73,13 @@ func main() {
 	defer stop()
 
 	go c.ReadMessages()
+
+	ping, err := c.Ping()
+	if err != nil {
+		log.Printf("ping error: %v", err)
+	}
+
+	log.Printf("Ping round trip time: %v", ping)
+
 	c.ChatLoop()
 }

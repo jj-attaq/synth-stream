@@ -2,12 +2,14 @@ package client
 
 import (
 	"bufio"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
+	"time"
 
 	"github.com/jj-attaq/synth-stream/internal/protocol"
 )
@@ -17,6 +19,7 @@ type Client struct {
 	username string
 	scanner  *bufio.Scanner
 	midiSend func([]byte) error
+	pingCh   chan time.Duration
 }
 
 func New(username string, address string) (*Client, error) {
@@ -29,6 +32,7 @@ func New(username string, address string) (*Client, error) {
 		conn:     conn,
 		username: username,
 		scanner:  bufio.NewScanner(os.Stdin),
+		pingCh:   make(chan time.Duration, 1),
 	}, nil
 }
 
@@ -59,6 +63,8 @@ func (c *Client) ReadMessages() {
 		}
 
 		switch packet.Type {
+		case protocol.TypeText:
+			fmt.Printf("\r%s\n> ", string(packet.Payload))
 		case protocol.TypeMidi:
 			// fmt.Printf("\rReceived MIDI: % x\n> ", packet.Payload)
 			if c.midiSend != nil {
@@ -66,8 +72,10 @@ func (c *Client) ReadMessages() {
 					log.Printf("midi playback error: %v", err)
 				}
 			}
-		case protocol.TypeText:
-			fmt.Printf("\r%s\n> ", string(packet.Payload))
+		case protocol.TypePing:
+			sent := binary.BigEndian.Uint64(packet.Payload)
+			rtt := time.Duration(time.Now().UnixNano() - int64(sent))
+			c.pingCh <- rtt
 		}
 	}
 }
@@ -83,6 +91,18 @@ func (c *Client) SendMidi(data []byte) error {
 func (c *Client) ChatLoop() {
 	fmt.Print("> ")
 	for c.scanner.Scan() {
+		if string(c.scanner.Bytes()) == "/ping" {
+			rtt, err := c.Ping()
+			if err != nil {
+				fmt.Printf("ping failed: %v\n", err)
+			} else {
+				fmt.Printf("latency: %v\n", rtt)
+			}
+
+			fmt.Print("> ")
+
+			continue
+		}
 		if err := protocol.WriteMessage(c.conn, protocol.TypeText, c.scanner.Bytes()); err != nil {
 			log.Printf("could not send message")
 			return
