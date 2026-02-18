@@ -23,7 +23,7 @@ func NewSession(id string, c1, c2 *Client) (*Session, error) {
 
 func (s *Session) GetPartner(client *Client) (*Client, error) {
 	if s.Client1 == nil || s.Client2 == nil {
-		return nil, errors.New("Partner is nil")
+		return nil, errors.New("partner is nil")
 	}
 	if client != s.Client1 && client != s.Client2 {
 		return nil, errors.New("client is not part of queried session")

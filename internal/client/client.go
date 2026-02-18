@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jj-attaq/synth-stream/internal/protocol"
@@ -51,6 +52,60 @@ func (c *Client) Handshake() error {
 	return nil
 }
 
+// SessionSetup handles session negotiation after the handshake and before
+// the ReadMessages loop starts. It does synchronous reads directly from the
+// connection since ReadMessages is not yet running.
+func (c *Client) SessionSetup() error {
+	welcomePacket, err := protocol.ReadMessage(c.conn)
+	if err != nil {
+		return fmt.Errorf("read welcome: %w", err)
+	}
+
+	fmt.Println(string(welcomePacket.Payload))
+
+	fmt.Print("Create session (c) or join session (j): ")
+	c.scanner.Scan()
+	switch string(c.scanner.Bytes()) {
+	case "c":
+		if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte("session:create")); err != nil {
+			return fmt.Errorf("could not create session: %w", err)
+		}
+		for {
+			packet, err := protocol.ReadMessage(c.conn)
+			if err != nil {
+				return fmt.Errorf("read session response: %w", err)
+			}
+			msg := string(packet.Payload)
+			fmt.Println(msg)
+			if strings.HasPrefix(msg, "paired ") {
+				break
+			}
+		}
+	case "j":
+		fmt.Print("Enter Session ID code: ")
+		c.scanner.Scan()
+		code := c.scanner.Text()
+		if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte("session:join:"+code)); err != nil {
+			return fmt.Errorf("could not join session: %w", err)
+		}
+
+		packet, err := protocol.ReadMessage(c.conn)
+		if err != nil {
+			return fmt.Errorf("read join response: %w", err)
+		}
+
+		msg := string(packet.Payload)
+		fmt.Println(msg)
+		if strings.HasPrefix(msg, "error:") {
+			return fmt.Errorf("%s", strings.TrimPrefix(msg, "error:"))
+		}
+	default:
+		return fmt.Errorf("invalid choice: must be 'c' or 'j'")
+	}
+
+	return nil
+}
+
 func (c *Client) ReadMessages() {
 	for {
 		packet, err := protocol.ReadMessage(c.conn)
@@ -66,7 +121,6 @@ func (c *Client) ReadMessages() {
 		case protocol.TypeText:
 			fmt.Printf("\r%s\n> ", string(packet.Payload))
 		case protocol.TypeMidi:
-			// fmt.Printf("\rReceived MIDI: % x\n> ", packet.Payload)
 			if c.midiSend != nil {
 				if err := c.midiSend(packet.Payload); err != nil {
 					log.Printf("midi playback error: %v", err)

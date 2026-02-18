@@ -59,6 +59,10 @@ func main() {
 		log.Fatalf("handshake failed: %v", err)
 	}
 
+	if err := c.SessionSetup(); err != nil {
+		log.Fatalf("session setup failed: %v", err)
+	}
+
 	stop, err := midi.CaptureInput(inPortNumber, func(data []byte) {
 		if err := send(data); err != nil {
 			log.Printf("midi local playback error: %v", err)

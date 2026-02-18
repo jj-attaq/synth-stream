@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jj-attaq/synth-stream/internal/protocol"
@@ -16,52 +18,85 @@ import (
 
 var usernameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{4,}$`)
 
+const codeChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+const codeLen = 6
+
 type Server struct {
-	clients       map[string]*Client
-	sessions      map[string]*Session
-	waitingClient *Client
-	mu            sync.RWMutex
-	listener      net.Listener
+	clients         map[string]*Client
+	sessions        map[string]*Session
+	pendingSessions map[string]*Client
+	mu              sync.RWMutex
+	listener        net.Listener
 }
 
-func (s *Server) pairClients(client *Client) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.waitingClient == nil {
-		s.waitingClient = client
-		if err := protocol.WriteMessage(s.waitingClient.Conn, protocol.TypeText, []byte("waiting...")); err != nil {
-			return fmt.Errorf("could not send waiting message")
-		}
-
-		log.Printf("%s is waiting to be paired\n", s.waitingClient.Username)
-		return nil
+func generateSessionCode() string {
+	b := make([]byte, codeLen)
+	for i := range b {
+		b[i] = codeChars[rand.Intn(len(codeChars))]
 	}
+	return string(b)
+}
+
+func (s *Server) handleSessionCreate(client *Client) (string, error) {
+	s.mu.Lock()
+	var code string
+	for {
+		code = generateSessionCode()
+		if _, exists := s.pendingSessions[code]; !exists {
+			break
+		}
+	}
+	s.pendingSessions[code] = client
+	s.mu.Unlock()
+
+	if err := protocol.WriteMessage(client.Conn, protocol.TypeText, []byte("session:created:"+code)); err != nil {
+		return "", fmt.Errorf("could not send session code: %w", err)
+	}
+	log.Printf("%s created session %s\n", client.Username, code)
+	return code, nil
+}
+
+func (s *Server) handleSessionJoin(joiner *Client, code string) error {
+	s.mu.Lock()
+	creator, exists := s.pendingSessions[code]
+	if !exists {
+		s.mu.Unlock()
+		protocol.WriteMessage(joiner.Conn, protocol.TypeText, []byte("error:session not found"))
+		return fmt.Errorf("session %s not found", code)
+	}
+	delete(s.pendingSessions, code)
 
 	id, err := uuid.NewUUID()
 	if err != nil {
-		return fmt.Errorf("uuid could not be created")
+		s.mu.Unlock()
+		return fmt.Errorf("create uuid: %w", err)
 	}
 
-	session, err := NewSession(id.String(), s.waitingClient, client)
+	session, err := NewSession(id.String(), creator, joiner)
 	if err != nil {
-		return fmt.Errorf("new session not created")
+		s.mu.Unlock()
+		return fmt.Errorf("create session: %w", err)
 	}
-
-	if err := protocol.WriteMessage(client.Conn, protocol.TypeText, []byte("paired "+s.waitingClient.Username)); err != nil {
-		return fmt.Errorf("could not send pairing message")
-	}
-
-	if err := protocol.WriteMessage(s.waitingClient.Conn, protocol.TypeText, []byte("paired "+client.Username)); err != nil {
-		return fmt.Errorf("could not send pairing message")
-	}
-
-	s.waitingClient = nil
-
 	s.addSessionLocked(session)
-	log.Printf("%s and %s paired\n", session.Client1.Username, session.Client2.Username)
+	s.mu.Unlock()
 
+	if err := protocol.WriteMessage(joiner.Conn, protocol.TypeText, []byte("paired "+creator.Username)); err != nil {
+		return fmt.Errorf("send paired to joiner: %w", err)
+	}
+	if err := protocol.WriteMessage(creator.Conn, protocol.TypeText, []byte("paired "+joiner.Username)); err != nil {
+		return fmt.Errorf("send paired to creator: %w", err)
+	}
+
+	creator.pairedCh <- struct{}{}
+	log.Printf("%s and %s paired in session %s\n", creator.Username, joiner.Username, code)
 	return nil
+}
+
+func (s *Server) removePendingSession(code string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pendingSessions, code)
+	log.Printf("pending session %s expired\n", code)
 }
 
 func New(address string) (*Server, error) {
@@ -71,9 +106,10 @@ func New(address string) (*Server, error) {
 	}
 
 	return &Server{
-		clients:  make(map[string]*Client),
-		sessions: make(map[string]*Session),
-		listener: listener,
+		clients:         make(map[string]*Client),
+		sessions:        make(map[string]*Session),
+		pendingSessions: make(map[string]*Client),
+		listener:        listener,
 	}, nil
 }
 
@@ -110,6 +146,7 @@ func (s *Server) registerClient(client *Client) string {
 	s.addClientLocked(client)
 	return ""
 }
+
 func (s *Server) addClientLocked(client *Client) {
 	s.clients[client.Username] = client
 	log.Printf("%s joined server\n", client.Username)
@@ -150,10 +187,11 @@ func (s *Server) routeToPartner(client *Client, packet protocol.Packet) error {
 	return nil
 }
 
-// conn is expected to be 1 singular connection, because of the go routine in s.Start()
+// handleConnection runs in its own goroutine per client, spawned by Start().
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
+	// Read username
 	message, err := protocol.ReadMessage(conn)
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
@@ -191,13 +229,47 @@ func (s *Server) handleConnection(conn net.Conn) {
 		return
 	}
 
-	//pairing logic
-	err = s.pairClients(client)
+	// Read session command (session:create or session:join:<code>)
+	sessionCmd, err := protocol.ReadMessage(conn)
 	if err != nil {
-		log.Println(err)
+		if !errors.Is(err, io.EOF) {
+			log.Printf("read error from %s: %v", username, err)
+		}
+		return
+	}
+	if sessionCmd.Type != protocol.TypeText {
+		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:session command must be text"))
+		return
 	}
 
-	//Conversation loop:
+	cmd := strings.TrimSpace(string(sessionCmd.Payload))
+	switch {
+	case cmd == "session:create":
+		sessionCode, err := s.handleSessionCreate(client)
+		if err != nil {
+			log.Printf("session create error: %v", err)
+			return
+		}
+		select {
+		case <-client.pairedCh:
+			// partner joined, proceed to message loop
+		case <-time.After(10 * time.Minute):
+			s.removePendingSession(sessionCode)
+			protocol.WriteMessage(conn, protocol.TypeText, []byte("error:session expired"))
+			return
+		}
+	case strings.HasPrefix(cmd, "session:join:"):
+		code := strings.TrimPrefix(cmd, "session:join:")
+		if err := s.handleSessionJoin(client, code); err != nil {
+			log.Printf("session join error: %v", err)
+			return
+		}
+	default:
+		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:unknown session command"))
+		return
+	}
+
+	// Message loop
 	for {
 		message, err := protocol.ReadMessage(conn)
 		if err != nil {
@@ -216,20 +288,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 }
 
-func (s *Server) cleanupClient(client *Client) { //The client that has been disconnected
+func (s *Server) cleanupClient(client *Client) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// If they're the waiting client, clear it
-	if client == s.waitingClient {
-		s.waitingClient = nil
-		return
-	}
-	// If they have a session, handle it
 	if client.Session != nil {
 		partner, _ := client.Session.GetPartner(client)
 
-		msg := append([]byte(client.Username), []byte(" has been disconnected\n")...)
+		msg := []byte(client.Username + " has been disconnected\n")
 		if err := protocol.WriteMessage(partner.Conn, protocol.TypeText, msg); err != nil {
 			log.Printf("failed to notify %s of disconnect: %v", partner.Username, err)
 		}
@@ -237,7 +303,6 @@ func (s *Server) cleanupClient(client *Client) { //The client that has been disc
 		s.removeSessionLocked(client.Session)
 		client.Session = nil
 		partner.Session = nil
-		return
 	}
 }
 
