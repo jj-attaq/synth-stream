@@ -187,59 +187,55 @@ func (s *Server) routeToPartner(client *Client, packet protocol.Packet) error {
 	return nil
 }
 
-// handleConnection runs in its own goroutine per client, spawned by Start().
-func (s *Server) handleConnection(conn net.Conn) {
-	defer conn.Close()
-
-	// Read username
+func (s *Server) registerConnection(conn net.Conn) (*Client, error) {
 	message, err := protocol.ReadMessage(conn)
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
 			log.Printf("read error from %s: %v", conn.RemoteAddr(), err)
 		}
-		return
+		return nil, err
 	}
 	if message.Type != protocol.TypeText {
 		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:first message must be text"))
-		return
+		return nil, fmt.Errorf("first message must be text")
 	}
 
 	username := strings.TrimSpace(string(message.Payload))
 
 	if errMsg := validateUsername(username); errMsg != "" {
 		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:"+errMsg))
-		return
+		return nil, fmt.Errorf("%s", errMsg)
 	}
 
 	client, err := NewClient(username, conn)
 	if err != nil {
 		log.Printf("Could not create client for user: %s", username)
-		return
+		return nil, err
 	}
 
 	if errMsg := s.registerClient(client); errMsg != "" {
 		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:"+errMsg))
-		return
+		return nil, fmt.Errorf("%s", errMsg)
 	}
-	defer s.cleanupClient(client)
-	defer s.removeClient(client.Username)
 
 	if err := protocol.WriteMessage(conn, protocol.TypeText, []byte("welcome "+client.Username)); err != nil {
 		log.Printf("could not welcome user")
-		return
+		return nil, err
 	}
+	return client, nil
+}
 
-	// Read session command (session:create or session:join:<code>)
-	sessionCmd, err := protocol.ReadMessage(conn)
+func (s *Server) performSessionSetup(client *Client) error {
+	sessionCmd, err := protocol.ReadMessage(client.Conn)
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
-			log.Printf("read error from %s: %v", username, err)
+			log.Printf("read error from %s: %v", client.Username, err)
 		}
-		return
+		return err
 	}
 	if sessionCmd.Type != protocol.TypeText {
-		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:session command must be text"))
-		return
+		protocol.WriteMessage(client.Conn, protocol.TypeText, []byte("error:session command must be text"))
+		return fmt.Errorf("session command must be text")
 	}
 
 	cmd := strings.TrimSpace(string(sessionCmd.Payload))
@@ -248,30 +244,56 @@ func (s *Server) handleConnection(conn net.Conn) {
 		sessionCode, err := s.handleSessionCreate(client)
 		if err != nil {
 			log.Printf("session create error: %v", err)
-			return
+			return err
 		}
 		select {
 		case <-client.pairedCh:
 			// partner joined, proceed to message loop
 		case <-time.After(10 * time.Minute):
 			s.removePendingSession(sessionCode)
-			protocol.WriteMessage(conn, protocol.TypeText, []byte("error:session expired"))
-			return
+			protocol.WriteMessage(client.Conn, protocol.TypeText, []byte("error:session expired"))
+			return fmt.Errorf("session expired")
 		}
 	case strings.HasPrefix(cmd, "session:join:"):
 		code := strings.TrimPrefix(cmd, "session:join:")
 		if err := s.handleSessionJoin(client, code); err != nil {
 			log.Printf("session join error: %v", err)
-			return
+			return err
 		}
 	default:
-		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:unknown session command"))
+		protocol.WriteMessage(client.Conn, protocol.TypeText, []byte("error:unknown session command"))
+		return fmt.Errorf("unknown session command: %s", cmd)
+	}
+	return nil
+}
+
+// handleConnection runs in its own goroutine per client, spawned by Start().
+// It sequences four phases: handshake, reconnect check, session setup, message loop.
+func (s *Server) handleConnection(conn net.Conn) {
+	defer conn.Close()
+
+	// Phase 1: Handshake — read username, validate, register, send welcome.
+	client, err := s.registerConnection(conn)
+	if err != nil {
+		log.Printf("registerConnection: %v", err)
 		return
 	}
 
-	// Message loop
+	defer s.cleanupClient(client)
+	defer s.removeClient(client.Username)
+
+	// Phase 2: Reconnect check — if this username has a session waiting in
+	// disconnectedSlots, restore it and skip session setup entirely.
+
+	// Phase 3: Session setup — read session:create or session:join:<code>,
+	// block until paired, then fall through to the message loop.
+	if err := s.performSessionSetup(client); err != nil {
+		log.Printf("performSessionSetup: %v", err)
+		return
+	}
+	// Phase 4: Message loop — route packets to partner until disconnect.
 	for {
-		message, err := protocol.ReadMessage(conn)
+		message, err := protocol.ReadMessage(client.Conn)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
 				log.Printf("read error from %s: %v", client.Username, err)
