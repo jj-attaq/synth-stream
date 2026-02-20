@@ -22,11 +22,12 @@ const codeChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 const codeLen = 6
 
 type Server struct {
-	clients         map[string]*Client
-	sessions        map[string]*Session
-	pendingSessions map[string]*Client
-	mu              sync.RWMutex
-	listener        net.Listener
+	clients           map[string]*Client
+	sessions          map[string]*Session
+	pendingSessions   map[string]*Client
+	disconnectedSlots map[string]*Session
+	mu                sync.RWMutex
+	listener          net.Listener
 }
 
 func generateSessionCode() string {
@@ -106,10 +107,11 @@ func New(address string) (*Server, error) {
 	}
 
 	return &Server{
-		clients:         make(map[string]*Client),
-		sessions:        make(map[string]*Session),
-		pendingSessions: make(map[string]*Client),
-		listener:        listener,
+		clients:           make(map[string]*Client),
+		sessions:          make(map[string]*Session),
+		pendingSessions:   make(map[string]*Client),
+		disconnectedSlots: make(map[string]*Session),
+		listener:          listener,
 	}, nil
 }
 
@@ -284,12 +286,26 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	// Phase 2: Reconnect check — if this username has a session waiting in
 	// disconnectedSlots, restore it and skip session setup entirely.
-
-	// Phase 3: Session setup — read session:create or session:join:<code>,
-	// block until paired, then fall through to the message loop.
-	if err := s.performSessionSetup(client); err != nil {
-		log.Printf("performSessionSetup: %v", err)
-		return
+	s.mu.Lock()
+	if session, exists := s.disconnectedSlots[client.Username]; exists {
+		if err := session.ReplaceClient(client.Username, client); err != nil {
+			s.mu.Unlock()
+			log.Printf("ReplaceClient: %v", err)
+			return
+		}
+		delete(s.disconnectedSlots, client.Username)
+		s.mu.Unlock()
+		partner, _ := client.Session.GetPartner(client)
+		protocol.WriteMessage(partner.Conn, protocol.TypeText, []byte(client.Username+" has reconnected"))
+		log.Printf("%s reconnected to session", client.Username)
+	} else {
+		s.mu.Unlock()
+		// Phase 3: Session setup — read session:create or session:join:<code>,
+		// block until paired, then fall through to the message loop.
+		if err := s.performSessionSetup(client); err != nil {
+			log.Printf("performSessionSetup: %v", err)
+			return
+		}
 	}
 	// Phase 4: Message loop — route packets to partner until disconnect.
 	for {
@@ -312,19 +328,36 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 func (s *Server) cleanupClient(client *Client) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if client.Session != nil {
 		partner, _ := client.Session.GetPartner(client)
 
-		msg := []byte(client.Username + " has been disconnected\n")
+		msg := []byte(client.Username + " has been disconnected, 2 minutes to reconnect.\n")
 		if err := protocol.WriteMessage(partner.Conn, protocol.TypeText, msg); err != nil {
 			log.Printf("failed to notify %s of disconnect: %v", partner.Username, err)
 		}
 
-		s.removeSessionLocked(client.Session)
+		s.disconnectedSlots[client.Username] = client.Session
+
 		client.Session = nil
-		partner.Session = nil
+		s.mu.Unlock()
+
+		go func() {
+			time.Sleep(2 * time.Minute)
+			s.mu.Lock()
+			defer s.mu.Unlock()
+
+			session, stillWaiting := s.disconnectedSlots[client.Username]
+			if !stillWaiting {
+				return
+			}
+			// Client never came back — clean up for real
+
+			protocol.WriteMessage(partner.Conn, protocol.TypeText, []byte(client.Username+" has permanently disconnected"))
+			partner.Session = nil
+			s.removeSessionLocked(session)
+			delete(s.disconnectedSlots, client.Username)
+		}()
 	}
 }
 

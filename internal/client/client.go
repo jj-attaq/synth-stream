@@ -16,11 +16,12 @@ import (
 )
 
 type Client struct {
-	conn     net.Conn
-	username string
-	scanner  *bufio.Scanner
-	midiSend func([]byte) error
-	pingCh   chan time.Duration
+	conn        net.Conn
+	username    string
+	sessionCode string
+	scanner     *bufio.Scanner
+	midiSend    func([]byte) error
+	pingCh      chan time.Duration
 }
 
 func New(username string, address string) (*Client, error) {
@@ -49,6 +50,18 @@ func (c *Client) Handshake() error {
 	if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte(c.username)); err != nil {
 		return fmt.Errorf("could not send username: %w", err)
 	}
+
+	packet, err := protocol.ReadMessage(c.conn)
+	if err != nil {
+		return fmt.Errorf("read handshake response: %w", err)
+	}
+
+	msg := string(packet.Payload)
+	if msg, isError := strings.CutPrefix(msg, "error:"); isError {
+		return fmt.Errorf("%s", msg)
+	}
+	fmt.Println(msg)
+
 	return nil
 }
 
@@ -56,13 +69,6 @@ func (c *Client) Handshake() error {
 // the ReadMessages loop starts. It does synchronous reads directly from the
 // connection since ReadMessages is not yet running.
 func (c *Client) SessionSetup() error {
-	welcomePacket, err := protocol.ReadMessage(c.conn)
-	if err != nil {
-		return fmt.Errorf("read welcome: %w", err)
-	}
-
-	fmt.Println(string(welcomePacket.Payload))
-
 	fmt.Print("Create session (c) or join session (j): ")
 	c.scanner.Scan()
 	switch string(c.scanner.Bytes()) {
@@ -80,6 +86,10 @@ func (c *Client) SessionSetup() error {
 			if strings.HasPrefix(msg, "paired ") {
 				break
 			}
+
+			if code, found := strings.CutPrefix(msg, "session:created:"); found {
+				c.sessionCode = code
+			}
 		}
 	case "j":
 		fmt.Print("Enter Session ID code: ")
@@ -96,9 +106,11 @@ func (c *Client) SessionSetup() error {
 
 		msg := string(packet.Payload)
 		fmt.Println(msg)
-		if strings.HasPrefix(msg, "error:") {
-			return fmt.Errorf("%s", strings.TrimPrefix(msg, "error:"))
+
+		if msg, isError := strings.CutPrefix(msg, "error:"); isError {
+			return fmt.Errorf("%s", msg)
 		}
+		c.sessionCode = code
 	default:
 		return fmt.Errorf("invalid choice: must be 'c' or 'j'")
 	}
@@ -106,7 +118,11 @@ func (c *Client) SessionSetup() error {
 	return nil
 }
 
-func (c *Client) ReadMessages() {
+func (c *Client) SessionCode() string {
+	return c.sessionCode
+}
+
+func (c *Client) ReadMessages() error {
 	for {
 		packet, err := protocol.ReadMessage(c.conn)
 		if err != nil {
@@ -114,7 +130,7 @@ func (c *Client) ReadMessages() {
 				log.Printf("read error: %v", err)
 			}
 			fmt.Println("\ndisconnected from server")
-			os.Exit(0)
+			return err
 		}
 
 		switch packet.Type {

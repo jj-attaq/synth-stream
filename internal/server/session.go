@@ -1,6 +1,6 @@
 package server
 
-import "errors"
+import "fmt"
 
 type Session struct {
 	ID      string
@@ -23,13 +23,27 @@ func NewSession(id string, c1, c2 *Client) (*Session, error) {
 
 func (s *Session) GetPartner(client *Client) (*Client, error) {
 	if s.Client1 == nil || s.Client2 == nil {
-		return nil, errors.New("partner is nil")
+		return nil, fmt.Errorf("partner is nil")
 	}
 	if client != s.Client1 && client != s.Client2 {
-		return nil, errors.New("client is not part of queried session")
+		return nil, fmt.Errorf("client is not part of queried session")
 	}
 	if client == s.Client1 {
 		return s.Client2, nil
 	}
 	return s.Client1, nil
+}
+
+func (s *Session) ReplaceClient(username string, newClient *Client) error {
+	switch username {
+	case s.Client1.Username:
+		s.Client1 = newClient
+		newClient.Session = s
+	case s.Client2.Username:
+		s.Client2 = newClient
+		newClient.Session = s
+	default:
+		return fmt.Errorf("client %s not in session", username)
+	}
+	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/jj-attaq/synth-stream/internal/client"
 	"github.com/jj-attaq/synth-stream/internal/midi"
@@ -13,6 +14,50 @@ import (
 	gomidi "gitlab.com/gomidi/midi/v2"
 	_ "gitlab.com/gomidi/midi/v2/drivers/rtmididrv"
 )
+
+func connect(username, address string, inPortNumber int, send func([]byte) error, sessionCode string) (string, error) {
+	c, err := client.New(username, address)
+	if err != nil {
+		return "", err
+	}
+	defer c.Close()
+
+	c.SetMidiSend(send)
+
+	if err := c.Handshake(); err != nil {
+		return "", err
+	}
+
+	if sessionCode == "" {
+		if err := c.SessionSetup(); err != nil {
+			return "", err
+		}
+	}
+
+	stop, err := midi.CaptureInput(inPortNumber, func(data []byte) {
+		if err := send(data); err != nil {
+			log.Printf("midi local playback error: %v", err)
+		}
+		if err := c.SendMidi(data); err != nil {
+			log.Printf("midi network send error: %v", err)
+		}
+	})
+	if err != nil {
+		return "", err
+	}
+	defer stop()
+
+	go c.ChatLoop()
+
+	ping, err := c.Ping()
+	if err != nil {
+		log.Printf("ping error: %v", err)
+	}
+
+	log.Printf("Ping round trip time: %v", ping)
+
+	return c.SessionCode(), c.ReadMessages()
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -47,43 +92,17 @@ func main() {
 	}
 
 	// Server connection
-	c, err := client.New(username, "localhost:8080")
-	if err != nil {
-		log.Fatalf("could not connect: %v", err)
-	}
-	defer c.Close()
-
-	c.SetMidiSend(send)
-
-	if err := c.Handshake(); err != nil {
-		log.Fatalf("handshake failed: %v", err)
-	}
-
-	if err := c.SessionSetup(); err != nil {
-		log.Fatalf("session setup failed: %v", err)
-	}
-
-	stop, err := midi.CaptureInput(inPortNumber, func(data []byte) {
-		if err := send(data); err != nil {
-			log.Printf("midi local playback error: %v", err)
+	var sessionCode string
+	for attempts := range 3 {
+		if attempts > 0 {
+			time.Sleep(2 * time.Second)
+			fmt.Printf("reconnecting (attempt %d/3)...\n", attempts+1)
 		}
-		if err := c.SendMidi(data); err != nil {
-			log.Printf("midi network send error: %v", err)
+		code, err := connect(username, "localhost:8080", inPortNumber, send, sessionCode)
+		sessionCode = code
+		if err == nil {
+			break
 		}
-	})
-	if err != nil {
-		log.Fatalf("could not start capture: %v", err)
+		log.Printf("disconnected: %v", err)
 	}
-	defer stop()
-
-	go c.ReadMessages()
-
-	ping, err := c.Ping()
-	if err != nil {
-		log.Printf("ping error: %v", err)
-	}
-
-	log.Printf("Ping round trip time: %v", ping)
-
-	c.ChatLoop()
 }

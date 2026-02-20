@@ -91,6 +91,120 @@ func TestRegisterClient_DuplicateUsername(t *testing.T) {
 	}
 }
 
+func newTestServer() *Server {
+	return &Server{
+		clients:           make(map[string]*Client),
+		sessions:          make(map[string]*Session),
+		pendingSessions:   make(map[string]*Client),
+		disconnectedSlots: make(map[string]*Session),
+	}
+}
+
+func TestRegisterConnection_Valid(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	s := newTestServer()
+	result := make(chan *Client, 1)
+	go func() {
+		c, err := s.registerConnection(serverConn)
+		if err != nil {
+			t.Errorf("registerConnection() error = %v", err)
+		}
+		result <- c
+	}()
+
+	protocol.WriteMessage(clientConn, protocol.TypeText, []byte("alice"))
+
+	packet, err := protocol.ReadMessage(clientConn)
+	if err != nil {
+		t.Fatalf("ReadMessage() error = %v", err)
+	}
+	if string(packet.Payload) != "welcome alice" {
+		t.Errorf("payload = %q, want %q", string(packet.Payload), "welcome alice")
+	}
+
+	c := <-result
+	if c.Username != "alice" {
+		t.Errorf("Username = %q, want %q", c.Username, "alice")
+	}
+}
+
+func TestRegisterConnection_InvalidUsername(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	s := newTestServer()
+	go s.registerConnection(serverConn)
+
+	protocol.WriteMessage(clientConn, protocol.TypeText, []byte("ab"))
+
+	packet, err := protocol.ReadMessage(clientConn)
+	if err != nil {
+		t.Fatalf("ReadMessage() error = %v", err)
+	}
+	if !strings.HasPrefix(string(packet.Payload), "error:") {
+		t.Errorf("expected error response, got %q", string(packet.Payload))
+	}
+}
+
+func TestRegisterConnection_DuplicateUsername(t *testing.T) {
+	s := newTestServer()
+	s.clients["alice"] = &Client{Username: "alice"}
+
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	go s.registerConnection(serverConn)
+
+	protocol.WriteMessage(clientConn, protocol.TypeText, []byte("alice"))
+
+	packet, err := protocol.ReadMessage(clientConn)
+	if err != nil {
+		t.Fatalf("ReadMessage() error = %v", err)
+	}
+	if !strings.HasPrefix(string(packet.Payload), "error:") {
+		t.Errorf("expected error response, got %q", string(packet.Payload))
+	}
+}
+
+func TestCleanupClient_ParksInDisconnectedSlots(t *testing.T) {
+	c1ServerConn, c1ClientConn := net.Pipe()
+	c2ServerConn, c2ClientConn := net.Pipe()
+	defer c1ServerConn.Close()
+	defer c1ClientConn.Close()
+	defer c2ServerConn.Close()
+	defer c2ClientConn.Close()
+
+	c1 := &Client{Username: "alice", Conn: c1ServerConn}
+	c2 := &Client{Username: "bob", Conn: c2ServerConn}
+	session, _ := NewSession("test-id", c1, c2)
+
+	s := newTestServer()
+	s.sessions[session.ID] = session
+
+	// drain the disconnect notification sent to c2
+	go protocol.ReadMessage(c2ClientConn)
+
+	s.cleanupClient(c1)
+
+	if _, exists := s.disconnectedSlots["alice"]; !exists {
+		t.Error("expected alice in disconnectedSlots after cleanup")
+	}
+	if _, exists := s.sessions[session.ID]; !exists {
+		t.Error("expected session to remain in sessions map during reconnect window")
+	}
+	if c1.Session != nil {
+		t.Error("expected c1.Session to be nil after cleanup")
+	}
+	if c2.Session == nil {
+		t.Error("expected c2.Session to remain set while partner may reconnect")
+	}
+}
+
 func TestRouteToPartner_TextPrependsUsername(t *testing.T) {
 	c1Conn, p1 := net.Pipe()
 	c2Conn, p2 := net.Pipe()

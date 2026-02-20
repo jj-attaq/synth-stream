@@ -72,3 +72,48 @@ func TestGetPartner_NilClients(t *testing.T) {
 		t.Error("GetPartner() expected error when clients are nil, got nil")
 	}
 }
+
+func TestReplaceClient_ReplacesClient1(t *testing.T) {
+	c1 := &Client{Username: "alice"}
+	c2 := &Client{Username: "bob"}
+	session, _ := NewSession("id", c1, c2)
+
+	newAlice := &Client{Username: "alice"}
+	if err := session.ReplaceClient("alice", newAlice); err != nil {
+		t.Fatalf("ReplaceClient() error = %v", err)
+	}
+	if session.Client1 != newAlice {
+		t.Error("Client1 not updated to new client")
+	}
+	if newAlice.Session != session {
+		t.Error("newClient.Session not set")
+	}
+}
+
+func TestReplaceClient_ReplacesClient2(t *testing.T) {
+	c1 := &Client{Username: "alice"}
+	c2 := &Client{Username: "bob"}
+	session, _ := NewSession("id", c1, c2)
+
+	newBob := &Client{Username: "bob"}
+	if err := session.ReplaceClient("bob", newBob); err != nil {
+		t.Fatalf("ReplaceClient() error = %v", err)
+	}
+	if session.Client2 != newBob {
+		t.Error("Client2 not updated to new client")
+	}
+	if newBob.Session != session {
+		t.Error("newClient.Session not set")
+	}
+}
+
+func TestReplaceClient_NonMember(t *testing.T) {
+	c1 := &Client{Username: "alice"}
+	c2 := &Client{Username: "bob"}
+	session, _ := NewSession("id", c1, c2)
+
+	eve := &Client{Username: "eve"}
+	if err := session.ReplaceClient("eve", eve); err == nil {
+		t.Error("ReplaceClient() expected error for non-member, got nil")
+	}
+}
