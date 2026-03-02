@@ -102,6 +102,7 @@ func connect(token, address string, inPortNumber int, send func([]byte) error, s
 	} else {
 		log.Printf("Ping round trip time: %v", ping)
 	}
+	fmt.Print("> ")
 
 	return c.SessionCode(), <-readDone
 }
