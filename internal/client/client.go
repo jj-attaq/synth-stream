@@ -17,24 +17,24 @@ import (
 
 type Client struct {
 	conn        net.Conn
-	username    string
+	token       string
 	sessionCode string
 	scanner     *bufio.Scanner
 	midiSend    func([]byte) error
 	pingCh      chan time.Duration
 }
 
-func New(username string, address string) (*Client, error) {
+func New(token string, address string) (*Client, error) {
 	conn, err := net.Dial("tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("could not connect: %w", err)
 	}
 
 	return &Client{
-		conn:     conn,
-		username: username,
-		scanner:  bufio.NewScanner(os.Stdin),
-		pingCh:   make(chan time.Duration, 1),
+		conn:    conn,
+		token:   token,
+		scanner: bufio.NewScanner(os.Stdin),
+		pingCh:  make(chan time.Duration, 1),
 	}, nil
 }
 
@@ -47,8 +47,8 @@ func (c *Client) Close() {
 }
 
 func (c *Client) Handshake() error {
-	if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte(c.username)); err != nil {
-		return fmt.Errorf("could not send username: %w", err)
+	if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte(c.token)); err != nil {
+		return fmt.Errorf("could not send token: %w", err)
 	}
 
 	packet, err := protocol.ReadMessage(c.conn)

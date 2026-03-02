@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jj-attaq/synth-stream/internal/auth"
 	"github.com/jj-attaq/synth-stream/internal/protocol"
 )
 
@@ -28,6 +29,7 @@ type Server struct {
 	disconnectedSlots map[string]*Session
 	mu                sync.RWMutex
 	listener          net.Listener
+	jwtSecret         string
 }
 
 func generateSessionCode() string {
@@ -100,7 +102,7 @@ func (s *Server) removePendingSession(code string) {
 	log.Printf("pending session %s expired\n", code)
 }
 
-func New(address string) (*Server, error) {
+func New(address, jwtSecret string) (*Server, error) {
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return nil, err
@@ -112,6 +114,7 @@ func New(address string) (*Server, error) {
 		pendingSessions:   make(map[string]*Client),
 		disconnectedSlots: make(map[string]*Session),
 		listener:          listener,
+		jwtSecret:         jwtSecret,
 	}, nil
 }
 
@@ -202,11 +205,12 @@ func (s *Server) registerConnection(conn net.Conn) (*Client, error) {
 		return nil, fmt.Errorf("first message must be text")
 	}
 
-	username := strings.TrimSpace(string(message.Payload))
+	token := strings.TrimSpace(string(message.Payload))
 
-	if errMsg := validateUsername(username); errMsg != "" {
-		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:"+errMsg))
-		return nil, fmt.Errorf("%s", errMsg)
+	username, err := auth.ValidateJWT(token, s.jwtSecret)
+	if err != nil {
+		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:invalid token"))
+		return nil, fmt.Errorf("invalid token: %w", err)
 	}
 
 	client, err := NewClient(username, conn)
@@ -221,7 +225,7 @@ func (s *Server) registerConnection(conn net.Conn) (*Client, error) {
 	}
 
 	if err := protocol.WriteMessage(conn, protocol.TypeText, []byte("welcome "+client.Username)); err != nil {
-		log.Printf("could not welcome user")
+		log.Printf("Could not welcome user")
 		return nil, err
 	}
 	return client, nil

@@ -2,8 +2,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"time"
@@ -15,8 +18,40 @@ import (
 	_ "gitlab.com/gomidi/midi/v2/drivers/rtmididrv"
 )
 
-func connect(username, address string, inPortNumber int, send func([]byte) error, sessionCode string) (string, error) {
-	c, err := client.New(username, address)
+// login calls POST /login on the HTTP API and returns a JWT on success.
+func login(username, password, apiAddress string) (string, error) {
+	var result struct {
+		Token string `json:"token"`
+	}
+
+	data, err := json.Marshal(struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}{username, password})
+	if err != nil {
+		return "", fmt.Errorf("marshal failed: %w", err)
+	}
+
+	body := bytes.NewReader(data)
+	resp, err := http.Post(apiAddress+"/login", "application/json", body)
+	if err != nil {
+		return "", fmt.Errorf("login request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("login failed: status %d", resp.StatusCode)
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+
+	return result.Token, nil
+}
+
+func connect(token, address string, inPortNumber int, send func([]byte) error, sessionCode string) (string, error) {
+	c, err := client.New(token, address)
 	if err != nil {
 		return "", err
 	}
@@ -60,17 +95,25 @@ func connect(username, address string, inPortNumber int, send func([]byte) error
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("usage: client <username>")
-		os.Exit(1)
+	scanner := bufio.NewScanner(os.Stdin)
+
+	// Auth
+	fmt.Print("Username: ")
+	scanner.Scan()
+	username := scanner.Text()
+
+	fmt.Print("Password: ")
+	scanner.Scan()
+	password := scanner.Text()
+
+	token, err := login(username, password, "http://localhost:8081")
+	if err != nil {
+		log.Fatalf("login failed: %v", err)
 	}
-	username := os.Args[1]
 
 	// MIDI setup
 	defer gomidi.CloseDriver()
 	midi.PrintDevices()
-
-	scanner := bufio.NewScanner(os.Stdin)
 
 	fmt.Print("Select input device number: ")
 	scanner.Scan()
@@ -98,7 +141,7 @@ func main() {
 			time.Sleep(2 * time.Second)
 			fmt.Printf("reconnecting (attempt %d/3)...\n", attempts+1)
 		}
-		code, err := connect(username, "localhost:8080", inPortNumber, send, sessionCode)
+		code, err := connect(token, "localhost:8080", inPortNumber, send, sessionCode)
 		sessionCode = code
 		if err == nil {
 			break

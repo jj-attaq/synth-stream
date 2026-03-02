@@ -4,9 +4,22 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jj-attaq/synth-stream/internal/auth"
 	"github.com/jj-attaq/synth-stream/internal/protocol"
 )
+
+const testSecret = "test-secret"
+
+func makeTestToken(t *testing.T, username string) []byte {
+	t.Helper()
+	token, err := auth.MakeJWT(username, testSecret, time.Hour)
+	if err != nil {
+		t.Fatalf("MakeJWT: %v", err)
+	}
+	return []byte(token)
+}
 
 func TestValidateUsername_Valid(t *testing.T) {
 	valid := []string{"alice", "bob123", "user_name", "user-name", "abcd", "ALICE"}
@@ -97,6 +110,7 @@ func newTestServer() *Server {
 		sessions:          make(map[string]*Session),
 		pendingSessions:   make(map[string]*Client),
 		disconnectedSlots: make(map[string]*Session),
+		jwtSecret:         testSecret,
 	}
 }
 
@@ -115,7 +129,7 @@ func TestRegisterConnection_Valid(t *testing.T) {
 		result <- c
 	}()
 
-	protocol.WriteMessage(clientConn, protocol.TypeText, []byte("alice"))
+	protocol.WriteMessage(clientConn, protocol.TypeText, makeTestToken(t, "alice"))
 
 	packet, err := protocol.ReadMessage(clientConn)
 	if err != nil {
@@ -131,7 +145,7 @@ func TestRegisterConnection_Valid(t *testing.T) {
 	}
 }
 
-func TestRegisterConnection_InvalidUsername(t *testing.T) {
+func TestRegisterConnection_InvalidToken(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	defer serverConn.Close()
 	defer clientConn.Close()
@@ -139,7 +153,7 @@ func TestRegisterConnection_InvalidUsername(t *testing.T) {
 	s := newTestServer()
 	go s.registerConnection(serverConn)
 
-	protocol.WriteMessage(clientConn, protocol.TypeText, []byte("ab"))
+	protocol.WriteMessage(clientConn, protocol.TypeText, []byte("not-a-valid-jwt"))
 
 	packet, err := protocol.ReadMessage(clientConn)
 	if err != nil {
@@ -160,7 +174,7 @@ func TestRegisterConnection_DuplicateUsername(t *testing.T) {
 
 	go s.registerConnection(serverConn)
 
-	protocol.WriteMessage(clientConn, protocol.TypeText, []byte("alice"))
+	protocol.WriteMessage(clientConn, protocol.TypeText, makeTestToken(t, "alice"))
 
 	packet, err := protocol.ReadMessage(clientConn)
 	if err != nil {
