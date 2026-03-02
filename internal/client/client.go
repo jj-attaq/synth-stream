@@ -1,14 +1,13 @@
 package client
 
 import (
-	"bufio"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"os"
 	"strings"
 	"time"
 
@@ -19,7 +18,6 @@ type Client struct {
 	conn        net.Conn
 	token       string
 	sessionCode string
-	scanner     *bufio.Scanner
 	midiSend    func([]byte) error
 	pingCh      chan time.Duration
 }
@@ -31,10 +29,9 @@ func New(token string, address string) (*Client, error) {
 	}
 
 	return &Client{
-		conn:    conn,
-		token:   token,
-		scanner: bufio.NewScanner(os.Stdin),
-		pingCh:  make(chan time.Duration, 1),
+		conn:   conn,
+		token:  token,
+		pingCh: make(chan time.Duration, 1),
 	}, nil
 }
 
@@ -66,12 +63,11 @@ func (c *Client) Handshake() error {
 }
 
 // SessionSetup handles session negotiation after the handshake and before
-// the ReadMessages loop starts. It does synchronous reads directly from the
-// connection since ReadMessages is not yet running.
-func (c *Client) SessionSetup() error {
+// the ReadMessages loop starts. It reads user input from stdinCh.
+func (c *Client) SessionSetup(stdinCh <-chan string) error {
 	fmt.Print("Create session (c) or join session (j): ")
-	c.scanner.Scan()
-	switch string(c.scanner.Bytes()) {
+	choice := <-stdinCh
+	switch choice {
 	case "c":
 		if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte("session:create")); err != nil {
 			return fmt.Errorf("could not create session: %w", err)
@@ -93,8 +89,7 @@ func (c *Client) SessionSetup() error {
 		}
 	case "j":
 		fmt.Print("Enter Session ID code: ")
-		c.scanner.Scan()
-		code := c.scanner.Text()
+		code := <-stdinCh
 		if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte("session:join:"+code)); err != nil {
 			return fmt.Errorf("could not join session: %w", err)
 		}
@@ -120,6 +115,25 @@ func (c *Client) SessionSetup() error {
 
 func (c *Client) SessionCode() string {
 	return c.sessionCode
+}
+
+// Rejoin sends session:join with the stored code without prompting the user.
+// Used when reconnecting within the same process where the code is already known.
+func (c *Client) Rejoin(code string) error {
+	if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte("session:join:"+code)); err != nil {
+		return fmt.Errorf("rejoin send: %w", err)
+	}
+	packet, err := protocol.ReadMessage(c.conn)
+	if err != nil {
+		return fmt.Errorf("rejoin read: %w", err)
+	}
+	msg := string(packet.Payload)
+	fmt.Println(msg)
+	if msg, isError := strings.CutPrefix(msg, "error:"); isError {
+		return fmt.Errorf("%s", msg)
+	}
+	c.sessionCode = code
+	return nil
 }
 
 func (c *Client) ReadMessages() error {
@@ -158,25 +172,33 @@ func (c *Client) SendMidi(data []byte) error {
 	return nil
 }
 
-func (c *Client) ChatLoop() {
+// ChatLoop reads lines from stdinCh and sends them to the partner.
+// It exits when ctx is cancelled (connection died) or stdinCh is closed.
+func (c *Client) ChatLoop(ctx context.Context, stdinCh <-chan string) {
 	fmt.Print("> ")
-	for c.scanner.Scan() {
-		if string(c.scanner.Bytes()) == "/ping" {
-			rtt, err := c.Ping()
-			if err != nil {
-				fmt.Printf("ping failed: %v\n", err)
-			} else {
-				fmt.Printf("latency: %v\n", rtt)
+	for {
+		select {
+		case line, ok := <-stdinCh:
+			if !ok {
+				return
 			}
-
+			if line == "/ping" {
+				rtt, err := c.Ping()
+				if err != nil {
+					fmt.Printf("ping failed: %v\n", err)
+				} else {
+					fmt.Printf("latency: %v\n", rtt)
+				}
+				fmt.Print("> ")
+				continue
+			}
+			if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte(line)); err != nil {
+				log.Printf("could not send message")
+				return
+			}
 			fmt.Print("> ")
-
-			continue
-		}
-		if err := protocol.WriteMessage(c.conn, protocol.TypeText, c.scanner.Bytes()); err != nil {
-			log.Printf("could not send message")
+		case <-ctx.Done():
 			return
 		}
-		fmt.Print("> ")
 	}
 }

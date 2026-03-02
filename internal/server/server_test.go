@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net"
 	"strings"
 	"testing"
@@ -110,6 +111,7 @@ func newTestServer() *Server {
 		sessions:          make(map[string]*Session),
 		pendingSessions:   make(map[string]*Client),
 		disconnectedSlots: make(map[string]*Session),
+		reconnectCancels:  make(map[string]context.CancelFunc),
 		jwtSecret:         testSecret,
 	}
 }

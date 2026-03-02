@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,7 @@ type Server struct {
 	sessions          map[string]*Session
 	pendingSessions   map[string]*Client
 	disconnectedSlots map[string]*Session
+	reconnectCancels  map[string]context.CancelFunc
 	mu                sync.RWMutex
 	listener          net.Listener
 	jwtSecret         string
@@ -61,6 +63,31 @@ func (s *Server) handleSessionCreate(client *Client) (string, error) {
 
 func (s *Server) handleSessionJoin(joiner *Client, code string) error {
 	s.mu.Lock()
+
+	// Reconnect path: if this username has a session parked in disconnectedSlots,
+	// restore the session regardless of the code supplied.
+	if session, exists := s.disconnectedSlots[joiner.Username]; exists {
+		if err := session.ReplaceClient(joiner.Username, joiner); err != nil {
+			s.mu.Unlock()
+			return fmt.Errorf("ReplaceClient: %w", err)
+		}
+		delete(s.disconnectedSlots, joiner.Username)
+		if cancel, ok := s.reconnectCancels[joiner.Username]; ok {
+			cancel()
+			delete(s.reconnectCancels, joiner.Username)
+		}
+		s.mu.Unlock()
+
+		partner, _ := joiner.Session.GetPartner(joiner)
+		protocol.WriteMessage(partner.Conn, protocol.TypeText, []byte(joiner.Username+" has reconnected"))
+		if err := protocol.WriteMessage(joiner.Conn, protocol.TypeText, []byte("paired "+partner.Username)); err != nil {
+			return fmt.Errorf("send paired to rejoiner: %w", err)
+		}
+		log.Printf("%s reconnected to session", joiner.Username)
+		return nil
+	}
+
+	// Fresh join path.
 	creator, exists := s.pendingSessions[code]
 	if !exists {
 		s.mu.Unlock()
@@ -113,6 +140,7 @@ func New(address, jwtSecret string) (*Server, error) {
 		sessions:          make(map[string]*Session),
 		pendingSessions:   make(map[string]*Client),
 		disconnectedSlots: make(map[string]*Session),
+		reconnectCancels:  make(map[string]context.CancelFunc),
 		listener:          listener,
 		jwtSecret:         jwtSecret,
 	}, nil
@@ -274,11 +302,12 @@ func (s *Server) performSessionSetup(client *Client) error {
 }
 
 // handleConnection runs in its own goroutine per client, spawned by Start().
-// It sequences four phases: handshake, reconnect check, session setup, message loop.
+// It sequences three phases: handshake, session setup, message loop.
+// Reconnect detection is handled inside handleSessionJoin.
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	// Phase 1: Handshake — read username, validate, register, send welcome.
+	// Phase 1: Handshake — validate JWT, register client, send welcome.
 	client, err := s.registerConnection(conn)
 	if err != nil {
 		log.Printf("registerConnection: %v", err)
@@ -288,30 +317,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 	defer s.cleanupClient(client)
 	defer s.removeClient(client.Username)
 
-	// Phase 2: Reconnect check — if this username has a session waiting in
-	// disconnectedSlots, restore it and skip session setup entirely.
-	s.mu.Lock()
-	if session, exists := s.disconnectedSlots[client.Username]; exists {
-		if err := session.ReplaceClient(client.Username, client); err != nil {
-			s.mu.Unlock()
-			log.Printf("ReplaceClient: %v", err)
-			return
-		}
-		delete(s.disconnectedSlots, client.Username)
-		s.mu.Unlock()
-		partner, _ := client.Session.GetPartner(client)
-		protocol.WriteMessage(partner.Conn, protocol.TypeText, []byte(client.Username+" has reconnected"))
-		log.Printf("%s reconnected to session", client.Username)
-	} else {
-		s.mu.Unlock()
-		// Phase 3: Session setup — read session:create or session:join:<code>,
-		// block until paired, then fall through to the message loop.
-		if err := s.performSessionSetup(client); err != nil {
-			log.Printf("performSessionSetup: %v", err)
-			return
-		}
+	// Phase 2: Session setup — read session:create or session:join:<code>.
+	// Fresh joins and reconnects are both handled here.
+	if err := s.performSessionSetup(client); err != nil {
+		log.Printf("performSessionSetup: %v", err)
+		return
 	}
-	// Phase 4: Message loop — route packets to partner until disconnect.
+
+	// Phase 3: Message loop — route packets to partner until disconnect.
 	for {
 		message, err := protocol.ReadMessage(client.Conn)
 		if err != nil {
@@ -341,13 +354,25 @@ func (s *Server) cleanupClient(client *Client) {
 			log.Printf("failed to notify %s of disconnect: %v", partner.Username, err)
 		}
 
-		s.disconnectedSlots[client.Username] = client.Session
+		// Cancel any stale timer goroutine from a previous disconnect.
+		if prev, ok := s.reconnectCancels[client.Username]; ok {
+			prev()
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		s.reconnectCancels[client.Username] = cancel
 
+		s.disconnectedSlots[client.Username] = client.Session
 		client.Session = nil
 		s.mu.Unlock()
 
 		go func() {
-			time.Sleep(2 * time.Minute)
+			select {
+			case <-ctx.Done():
+				// Cancelled: client reconnected or disconnected again (new timer owns cleanup).
+				return
+			case <-time.After(2 * time.Minute):
+			}
+
 			s.mu.Lock()
 			defer s.mu.Unlock()
 
@@ -355,12 +380,12 @@ func (s *Server) cleanupClient(client *Client) {
 			if !stillWaiting {
 				return
 			}
-			// Client never came back — clean up for real
-
+			// Client never came back — clean up for real.
 			protocol.WriteMessage(partner.Conn, protocol.TypeText, []byte(client.Username+" has permanently disconnected"))
 			partner.Session = nil
 			s.removeSessionLocked(session)
 			delete(s.disconnectedSlots, client.Username)
+			delete(s.reconnectCancels, client.Username)
 		}()
 	}
 }
