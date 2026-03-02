@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -50,7 +51,10 @@ func login(username, password, apiAddress string) (string, error) {
 	return result.Token, nil
 }
 
-func connect(token, address string, inPortNumber int, send func([]byte) error, sessionCode string) (string, error) {
+func connect(token, address string, inPortNumber int, send func([]byte) error, sessionCode string, stdinCh <-chan string) (string, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	c, err := client.New(token, address)
 	if err != nil {
 		return "", err
@@ -64,7 +68,11 @@ func connect(token, address string, inPortNumber int, send func([]byte) error, s
 	}
 
 	if sessionCode == "" {
-		if err := c.SessionSetup(); err != nil {
+		if err := c.SessionSetup(stdinCh); err != nil {
+			return "", err
+		}
+	} else {
+		if err := c.Rejoin(sessionCode); err != nil {
 			return "", err
 		}
 	}
@@ -82,22 +90,26 @@ func connect(token, address string, inPortNumber int, send func([]byte) error, s
 	}
 	defer stop()
 
-	go c.ChatLoop()
+	// Start ReadMessages first — Ping() depends on it routing the echo to pingCh.
+	readDone := make(chan error, 1)
+	go func() { readDone <- c.ReadMessages() }()
+
+	go c.ChatLoop(ctx, stdinCh)
 
 	ping, err := c.Ping()
 	if err != nil {
 		log.Printf("ping error: %v", err)
+	} else {
+		log.Printf("Ping round trip time: %v", ping)
 	}
 
-	log.Printf("Ping round trip time: %v", ping)
-
-	return c.SessionCode(), c.ReadMessages()
+	return c.SessionCode(), <-readDone
 }
 
 func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 
-	// Auth
+	// Auth — read synchronously before handing stdin to the channel.
 	fmt.Print("Username: ")
 	scanner.Scan()
 	username := scanner.Text()
@@ -134,6 +146,16 @@ func main() {
 		log.Fatalf("could not open output: %v", err)
 	}
 
+	// Hand stdin to a single goroutine. All session/chat reads go through this channel.
+	// Only one goroutine ever reads from os.Stdin, eliminating scanner races on reconnect.
+	stdinCh := make(chan string)
+	go func() {
+		for scanner.Scan() {
+			stdinCh <- scanner.Text()
+		}
+		close(stdinCh)
+	}()
+
 	// Server connection
 	var sessionCode string
 	for attempts := range 3 {
@@ -141,7 +163,7 @@ func main() {
 			time.Sleep(2 * time.Second)
 			fmt.Printf("reconnecting (attempt %d/3)...\n", attempts+1)
 		}
-		code, err := connect(token, "localhost:8080", inPortNumber, send, sessionCode)
+		code, err := connect(token, "localhost:8080", inPortNumber, send, sessionCode, stdinCh)
 		sessionCode = code
 		if err == nil {
 			break
