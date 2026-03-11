@@ -13,17 +13,23 @@ import (
 //   Bytes 3+:  Payload data
 
 const (
-	TypeText  = 0x01
-	TypeMidi  = 0x10
-	TypeAudio = 0x20
-	TypePing  = 0x30
+	TypeText        = 0x01
+	TypeMidi        = 0x10
+	TypeAudio       = 0x20
+	TypePing        = 0x30
+	TypeSignalOffer = 0x40
+	TypeSignalAnswer = 0x41
+	TypeICECandidate = 0x42
 )
 
 var validTypes = map[byte]struct{}{
-	TypeText:  {},
-	TypeMidi:  {},
-	TypeAudio: {},
-	TypePing:  {},
+	TypeText:         {},
+	TypeMidi:         {},
+	TypeAudio:        {},
+	TypePing:         {},
+	TypeSignalOffer:  {},
+	TypeSignalAnswer: {},
+	TypeICECandidate: {},
 }
 
 type Packet struct {

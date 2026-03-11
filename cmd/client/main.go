@@ -51,7 +51,12 @@ func login(username, password, apiAddress string) (string, error) {
 	return result.Token, nil
 }
 
-func connect(token, address string, inPortNumber int, send func([]byte) error, sessionCode string, stdinCh <-chan string) (string, error) {
+func connect(token, address string,
+	inPortNumber int,
+	send func([]byte) error,
+	sessionCode string,
+	stdinCh <-chan string) (string, error) {
+	//
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -76,12 +81,41 @@ func connect(token, address string, inPortNumber int, send func([]byte) error, s
 			return "", err
 		}
 	}
+	dcReady := make(chan func([]byte) error, 1)
+	webrtcErr := make(chan error, 1)
+	var dcSend func([]byte) error
+
+	go func() {
+		if err := c.StartWebRTC(func(dcSend func([]byte) error) {
+			dcReady <- dcSend
+		}, func() {
+			dcSend = c.SendMidi
+			log.Println("WebRTC failed — falling back to TCP relay")
+		}); err != nil {
+			webrtcErr <- err
+		}
+	}()
+
+	// Start ReadMessages first — Ping() depends on it routing the echo to pingCh.
+	readDone := make(chan error, 1)
+	go func() { readDone <- c.ReadMessages() }()
+
+	select {
+	case dcSend = <-dcReady:
+		log.Println("P2P connected — you can play")
+		// start CaptureInput here, using dcSend directly
+	case err := <-webrtcErr:
+		return "", fmt.Errorf("WebRTC failed: %w", err)
+	case <-time.After(15 * time.Second):
+		dcSend = c.SendMidi
+		log.Println("WebRTC timeout — falling back to TCP relay")
+	}
 
 	stop, err := midi.CaptureInput(inPortNumber, func(data []byte) {
 		if err := send(data); err != nil {
 			log.Printf("midi local playback error: %v", err)
 		}
-		if err := c.SendMidi(data); err != nil {
+		if err := dcSend(data); err != nil {
 			log.Printf("midi network send error: %v", err)
 		}
 	})
@@ -89,10 +123,6 @@ func connect(token, address string, inPortNumber int, send func([]byte) error, s
 		return "", err
 	}
 	defer stop()
-
-	// Start ReadMessages first — Ping() depends on it routing the echo to pingCh.
-	readDone := make(chan error, 1)
-	go func() { readDone <- c.ReadMessages() }()
 
 	go c.ChatLoop(ctx, stdinCh)
 

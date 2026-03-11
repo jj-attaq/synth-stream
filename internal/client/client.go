@@ -18,8 +18,10 @@ type Client struct {
 	conn        net.Conn
 	token       string
 	sessionCode string
+	isOfferer   bool
 	midiSend    func([]byte) error
 	pingCh      chan time.Duration
+	sigCh       chan protocol.Packet
 }
 
 func New(token string, address string) (*Client, error) {
@@ -32,6 +34,7 @@ func New(token string, address string) (*Client, error) {
 		conn:   conn,
 		token:  token,
 		pingCh: make(chan time.Duration, 1),
+		sigCh:  make(chan protocol.Packet, 8),
 	}, nil
 }
 
@@ -87,6 +90,7 @@ func (c *Client) SessionSetup(stdinCh <-chan string) error {
 				c.sessionCode = code
 			}
 		}
+		c.isOfferer = true
 	case "j":
 		fmt.Print("Enter Session ID code: ")
 		code := <-stdinCh
@@ -115,6 +119,14 @@ func (c *Client) SessionSetup(stdinCh <-chan string) error {
 
 func (c *Client) SessionCode() string {
 	return c.sessionCode
+}
+
+func (c *Client) IsOfferer() bool {
+	return c.isOfferer
+}
+
+func (c *Client) SigCh() <-chan protocol.Packet {
+	return c.sigCh
 }
 
 // Rejoin sends session:join with the stored code without prompting the user.
@@ -160,6 +172,11 @@ func (c *Client) ReadMessages() error {
 			sent := binary.BigEndian.Uint64(packet.Payload)
 			rtt := time.Duration(time.Now().UnixNano() - int64(sent))
 			c.pingCh <- rtt
+		case protocol.TypeSignalOffer, protocol.TypeSignalAnswer, protocol.TypeICECandidate:
+			select {
+			case c.sigCh <- packet:
+			default:
+			}
 		}
 	}
 }
