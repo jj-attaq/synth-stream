@@ -192,7 +192,7 @@ func (c *Client) SendMidi(data []byte) error {
 // ChatLoop reads lines from stdinCh and sends them to the partner.
 // It exits when ctx is cancelled (connection died) or stdinCh is closed.
 func (c *Client) ChatLoop(ctx context.Context, stdinCh <-chan string) {
-	fmt.Print("> ")
+	fmt.Print("\n> ")
 	for {
 		select {
 		case line, ok := <-stdinCh:
@@ -208,6 +208,11 @@ func (c *Client) ChatLoop(ctx context.Context, stdinCh <-chan string) {
 				}
 				fmt.Print("> ")
 				continue
+			}
+			if line == "/disconnect" {
+				c.Close()
+				log.Printf("disconnected")
+				return
 			}
 			if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte(line)); err != nil {
 				log.Printf("could not send message")
