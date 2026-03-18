@@ -57,8 +57,6 @@ func connect(token, address string,
 	sessionCode string,
 	stdinCh <-chan string) (string, error) {
 	//
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	c, err := client.New(token, address)
 	if err != nil {
@@ -81,24 +79,42 @@ func connect(token, address string,
 			return "", err
 		}
 	}
+	/////////////////////
 	dcReady := make(chan func([]byte) error, 1)
 	webrtcErr := make(chan error, 1)
 	var dcSend func([]byte) error
 
+	// go func() {
+	// 	if err := c.StartWebRTC(func(dcSend func([]byte) error) {
+	// 		dcReady <- dcSend
+	// 	}, func() {
+	// 		dcSend = c.SendMidi
+	// 		log.Println("WebRTC failed — falling back to TCP relay")
+	// 	}); err != nil {
+	// 		webrtcErr <- err
+	// 	}
+	// }()
+	onReady := func(send func([]byte) error) {
+		dcReady <- send
+	}
+	onFailed := func() {
+		dcSend = c.SendMidi
+		log.Println("WebRTC failed — falling back to TCP relay")
+	}
+
 	go func() {
-		if err := c.StartWebRTC(func(dcSend func([]byte) error) {
-			dcReady <- dcSend
-		}, func() {
-			dcSend = c.SendMidi
-			log.Println("WebRTC failed — falling back to TCP relay")
-		}); err != nil {
+		if err := c.StartWebRTC(onReady, onFailed); err != nil {
 			webrtcErr <- err
 		}
 	}()
 
 	// Start ReadMessages first — Ping() depends on it routing the echo to pingCh.
+
+	// readDone is connect(...)'s exit condition
 	readDone := make(chan error, 1)
-	go func() { readDone <- c.ReadMessages() }()
+	go func() {
+		readDone <- c.ReadMessages()
+	}()
 
 	select {
 	case dcSend = <-dcReady:
@@ -124,6 +140,9 @@ func connect(token, address string,
 	}
 	defer stop()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	go c.ChatLoop(ctx, stdinCh)
 
 	ping, err := c.Ping()
@@ -136,6 +155,37 @@ func connect(token, address string,
 
 	return c.SessionCode(), <-readDone
 }
+
+// make sure to close the client in connect()
+func setup(token, address, sessionCode string, stdinCh <-chan string) (*client.Client, error) {
+	c, err := client.New(token, address)
+	if err != nil {
+		return nil, err
+	}
+	// defer c.Close()
+
+	if err := c.Handshake(); err != nil {
+		return nil, err
+	}
+
+	if sessionCode == "" {
+		if err := c.SessionSetup(stdinCh); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := c.Rejoin(sessionCode); err != nil {
+			return nil, err
+		}
+	}
+
+	return c, nil
+}
+
+func negotiateP2P(c *client.Client, send func([]byte) error) (func([]byte) error, error)
+
+func startMIDI(inPortNumber int, send, dcSend func([]byte) error) (func(), error)
+
+func run(c *client.Client, stdinCh <-chan string) error
 
 func main() {
 	scanner := bufio.NewScanner(os.Stdin)
@@ -179,13 +229,15 @@ func main() {
 
 	// Hand stdin to a single goroutine. All session/chat reads go through this channel.
 	// Only one goroutine ever reads from os.Stdin, eliminating scanner races on reconnect.
-	stdinCh := make(chan string)
-	go func() {
-		for scanner.Scan() {
-			stdinCh <- scanner.Text()
-		}
-		close(stdinCh)
-	}()
+
+	stdinCh := readStdin(scanner)
+	// stdinCh := make(chan string)
+	// go func() {
+	// 	for scanner.Scan() {
+	// 		stdinCh <- scanner.Text()
+	// 	}
+	// 	close(stdinCh)
+	// }()
 
 	// Server connection
 	var sessionCode string
@@ -201,4 +253,15 @@ func main() {
 		}
 		log.Printf("disconnected: %v", err)
 	}
+}
+
+func readStdin(scanner *bufio.Scanner) <-chan string {
+	ch := make(chan string)
+	go func() {
+		for scanner.Scan() {
+			ch <- scanner.Text()
+		}
+		close(ch)
+	}()
+	return ch
 }
