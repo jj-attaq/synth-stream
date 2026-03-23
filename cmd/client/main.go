@@ -53,116 +53,47 @@ func login(username, password, apiAddress string) (string, error) {
 
 func connect(token, address string,
 	inPortNumber int,
-	send func([]byte) error,
+	localSend midi.MidiSender,
 	sessionCode string,
 	stdinCh <-chan string) (string, error) {
-	//
 
-	c, err := client.New(token, address)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	c, err := setup(token, address, sessionCode, stdinCh)
 	if err != nil {
 		return "", err
 	}
 	defer c.Close()
 
-	c.SetMidiSend(send)
+	// SetMidiSend must be called before negotiateP2P — ReadMessages starts inside
+	// negotiateP2P and calls midiSend when partner MIDI arrives. The localSend function
+	// wraps midi.OpenOutput(), which routes incoming MIDI to the configured virtual
+	// MIDI output port for the DAW to receive. Device selection happens in main()
+	// before any network connection is established.
+	c.SetMidiSend(localSend)
 
-	if err := c.Handshake(); err != nil {
+	dcSend, connDone, err := negotiateP2P(c)
+	if err != nil {
 		return "", err
 	}
 
-	if sessionCode == "" {
-		if err := c.SessionSetup(stdinCh); err != nil {
-			return "", err
-		}
-	} else {
-		if err := c.Rejoin(sessionCode); err != nil {
-			return "", err
-		}
-	}
-	/////////////////////
-	dcReady := make(chan func([]byte) error, 1)
-	webrtcErr := make(chan error, 1)
-	var dcSend func([]byte) error
-
-	// go func() {
-	// 	if err := c.StartWebRTC(func(dcSend func([]byte) error) {
-	// 		dcReady <- dcSend
-	// 	}, func() {
-	// 		dcSend = c.SendMidi
-	// 		log.Println("WebRTC failed — falling back to TCP relay")
-	// 	}); err != nil {
-	// 		webrtcErr <- err
-	// 	}
-	// }()
-	onReady := func(send func([]byte) error) {
-		dcReady <- send
-	}
-	onFailed := func() {
-		dcSend = c.SendMidi
-		log.Println("WebRTC failed — falling back to TCP relay")
-	}
-
-	go func() {
-		if err := c.StartWebRTC(onReady, onFailed); err != nil {
-			webrtcErr <- err
-		}
-	}()
-
-	// Start ReadMessages first — Ping() depends on it routing the echo to pingCh.
-
-	// readDone is connect(...)'s exit condition
-	readDone := make(chan error, 1)
-	go func() {
-		readDone <- c.ReadMessages()
-	}()
-
-	select {
-	case dcSend = <-dcReady:
-		log.Println("P2P connected — you can play")
-		// start CaptureInput here, using dcSend directly
-	case err := <-webrtcErr:
-		return "", fmt.Errorf("WebRTC failed: %w", err)
-	case <-time.After(15 * time.Second):
-		dcSend = c.SendMidi
-		log.Println("WebRTC timeout — falling back to TCP relay")
-	}
-
-	stop, err := midi.CaptureInput(inPortNumber, func(data []byte) {
-		if err := send(data); err != nil {
-			log.Printf("midi local playback error: %v", err)
-		}
-		if err := dcSend(data); err != nil {
-			log.Printf("midi network send error: %v", err)
-		}
-	})
+	stop, err := startMIDI(inPortNumber, localSend, dcSend)
 	if err != nil {
 		return "", err
 	}
 	defer stop()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	run(ctx, c, stdinCh)
 
-	go c.ChatLoop(ctx, stdinCh)
-
-	ping, err := c.Ping()
-	if err != nil {
-		log.Printf("ping error: %v", err)
-	} else {
-		log.Printf("Ping round trip time: %v", ping)
-	}
-	fmt.Print("> ")
-
-	return c.SessionCode(), <-readDone
+	return c.SessionCode(), <-connDone
 }
 
-// make sure to close the client in connect()
 func setup(token, address, sessionCode string, stdinCh <-chan string) (*client.Client, error) {
 	c, err := client.New(token, address)
 	if err != nil {
 		return nil, err
 	}
-	// defer c.Close()
 
 	if err := c.Handshake(); err != nil {
 		return nil, err
@@ -181,11 +112,71 @@ func setup(token, address, sessionCode string, stdinCh <-chan string) (*client.C
 	return c, nil
 }
 
-func negotiateP2P(c *client.Client, send func([]byte) error) (func([]byte) error, error)
+func negotiateP2P(c *client.Client) (dcSend func([]byte) error, connDone <-chan error, err error) {
+	dcReady := make(chan func([]byte) error, 1)
+	webrtcErr := make(chan error, 1)
 
-func startMIDI(inPortNumber int, send, dcSend func([]byte) error) (func(), error)
+	onReady := func(localSend func([]byte) error) {
+		dcReady <- localSend
+	}
+	onFailed := func() {
+		dcSend = c.SendMidi
+		log.Println("WebRTC failed — falling back to TCP relay")
+	}
 
-func run(c *client.Client, stdinCh <-chan string) error
+	go func() {
+		if err := c.StartWebRTC(onReady, onFailed); err != nil {
+			webrtcErr <- err
+		}
+	}()
+
+	ch := make(chan error, 1)
+	connDone = ch
+	go func() {
+		ch <- c.ReadMessages()
+	}()
+
+	select {
+	case dcSend = <-dcReady:
+		log.Println("P2P connected — you can play")
+		// start CaptureInput here, using dcSend directly
+	case err = <-webrtcErr:
+		return nil, nil, fmt.Errorf("WebRTC failed: %w", err)
+	case <-time.After(15 * time.Second):
+		dcSend = c.SendMidi
+		log.Println("WebRTC timeout — falling back to TCP relay")
+	}
+
+	return dcSend, connDone, nil
+}
+
+func startMIDI(inPortNumber int, localSend midi.MidiSender, dcSend func([]byte) error) (func(), error) {
+	stop, err := midi.CaptureInput(inPortNumber, func(data []byte) {
+		if err := localSend(data); err != nil {
+			log.Printf("midi local playback error: %v", err)
+		}
+		if err := dcSend(data); err != nil {
+			log.Printf("midi network send error: %v", err)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	// defer stop()
+
+	return stop, nil
+}
+
+func run(ctx context.Context, c *client.Client, stdinCh <-chan string) {
+	ping, err := c.Ping()
+	if err != nil {
+		log.Printf("ping error: %v", err)
+	} else {
+		log.Printf("Ping round trip time: %v", ping)
+	}
+
+	go c.ChatLoop(ctx, stdinCh)
+}
 
 func main() {
 	scanner := bufio.NewScanner(os.Stdin)
@@ -222,7 +213,7 @@ func main() {
 		log.Fatalf("invalid port number: %v", err)
 	}
 
-	send, err := midi.OpenOutput(outPortNumber)
+	localSend, err := midi.OpenOutput(outPortNumber)
 	if err != nil {
 		log.Fatalf("could not open output: %v", err)
 	}
@@ -246,7 +237,7 @@ func main() {
 			time.Sleep(2 * time.Second)
 			fmt.Printf("reconnecting (attempt %d/3)...\n", attempts+1)
 		}
-		code, err := connect(token, "localhost:8080", inPortNumber, send, sessionCode, stdinCh)
+		code, err := connect(token, "localhost:8080", inPortNumber, localSend, sessionCode, stdinCh)
 		sessionCode = code
 		if err == nil {
 			break

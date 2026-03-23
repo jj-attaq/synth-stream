@@ -8,7 +8,7 @@ import (
 
 // OpenOutput opens a MIDI output port and returns a send function.
 // The send function accepts raw MIDI bytes and writes them to the output device.
-func OpenOutput(portNumber int) (func([]byte) error, error) {
+func OpenOutput(portNumber int) (MidiSender, error) {
 	outPort, err := gomidi.OutPort(portNumber)
 	if err != nil {
 		return nil, fmt.Errorf("could not open output port %d: %w", portNumber, err)
