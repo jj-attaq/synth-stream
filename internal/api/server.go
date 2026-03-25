@@ -19,8 +19,8 @@ type querier interface {
 }
 
 type Server struct {
-	queries   querier
-	jwtSecret string
+	queries    querier
+	jwtSecret  string
 	httpServer *http.Server
 }
 
@@ -56,6 +56,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusBadRequest, "Couldn't decode parameters", err)
 		return
 	}
+
+	if len(req.Username) < 4 || len(req.Username) > 10 {
+		respondWithError(w, http.StatusUnprocessableEntity, "Username must be between 4 and 10 characters", nil)
+		return
+	}
+	if len(req.Password) < 8 {
+		respondWithError(w, http.StatusUnprocessableEntity, "Password must be at least 8 characters", nil)
+		return
+	}
+
 	hashedPW, err := auth.HashPassword(req.Password)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't hash password", err)

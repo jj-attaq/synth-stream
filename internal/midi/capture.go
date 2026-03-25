@@ -2,6 +2,7 @@ package midi
 
 import (
 	"fmt"
+	"log"
 
 	gomidi "gitlab.com/gomidi/midi/v2"
 )
@@ -16,7 +17,6 @@ func CaptureInput(portNumber int, onMessage func([]byte)) (func(), error) {
 	}
 
 	stop, err := gomidi.ListenTo(inPort, func(msg gomidi.Message, timestampms int32) {
-		// fmt.Printf("raw: % x\n", msg.Bytes())
 		if msg.Is(gomidi.RealTimeMsg) {
 			return
 		}
@@ -26,6 +26,6 @@ func CaptureInput(portNumber int, onMessage func([]byte)) (func(), error) {
 		return nil, fmt.Errorf("could not listen to port %d: %w", portNumber, err)
 	}
 
-	fmt.Printf("Listening on: %s\n", inPort)
+	log.Printf("Listening on: %s\n", inPort)
 	return stop, nil
 }

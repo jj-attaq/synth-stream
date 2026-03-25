@@ -22,39 +22,6 @@ func makeTestToken(t *testing.T, username string) []byte {
 	return []byte(token)
 }
 
-func TestValidateUsername_Valid(t *testing.T) {
-	valid := []string{"alice", "bob123", "user_name", "user-name", "abcd", "ALICE"}
-	for _, u := range valid {
-		t.Run(u, func(t *testing.T) {
-			if msg := validateUsername(u); msg != "" {
-				t.Errorf("validateUsername(%q) = %q, want empty", u, msg)
-			}
-		})
-	}
-}
-
-func TestValidateUsername_TooShort(t *testing.T) {
-	short := []string{"", "a", "ab", "abc"}
-	for _, u := range short {
-		t.Run(u, func(t *testing.T) {
-			if msg := validateUsername(u); msg == "" {
-				t.Errorf("validateUsername(%q) expected error, got empty", u)
-			}
-		})
-	}
-}
-
-func TestValidateUsername_InvalidChars(t *testing.T) {
-	invalid := []string{"user name", "user@name", "user!name", "user.name"}
-	for _, u := range invalid {
-		t.Run(u, func(t *testing.T) {
-			if msg := validateUsername(u); msg == "" {
-				t.Errorf("validateUsername(%q) expected error, got empty", u)
-			}
-		})
-	}
-}
-
 func TestGenerateSessionCode_Length(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		code := generateSessionCode()
@@ -76,10 +43,7 @@ func TestGenerateSessionCode_ValidChars(t *testing.T) {
 }
 
 func TestNewClient_PairedChBuffered(t *testing.T) {
-	c, err := NewClient("alice", nil)
-	if err != nil {
-		t.Fatalf("NewClient() error = %v", err)
-	}
+	c := NewClient("alice", nil)
 	// pairedCh must be buffered (cap 1) so a send never blocks the joiner goroutine
 	if cap(c.pairedCh) != 1 {
 		t.Errorf("pairedCh capacity = %d, want 1", cap(c.pairedCh))
@@ -107,12 +71,12 @@ func TestRegisterClient_DuplicateUsername(t *testing.T) {
 
 func newTestServer() *Server {
 	return &Server{
-		clients:           make(map[string]*Client),
-		sessions:          make(map[string]*Session),
-		pendingSessions:   make(map[string]*Client),
-		disconnectedSlots: make(map[string]*Session),
-		reconnectCancels:  make(map[string]context.CancelFunc),
-		jwtSecret:         testSecret,
+		clients:              make(map[string]*Client),
+		sessions:             make(map[string]*Session),
+		pendingSessions:      make(map[string]*Client),
+		disconnectedSessions: make(map[string]*Session),
+		reconnectCancels:     make(map[string]context.CancelFunc),
+		jwtSecret:            testSecret,
 	}
 }
 
@@ -197,7 +161,7 @@ func TestCleanupClient_ParksInDisconnectedSlots(t *testing.T) {
 
 	c1 := &Client{Username: "alice", Conn: c1ServerConn}
 	c2 := &Client{Username: "bob", Conn: c2ServerConn}
-	session, _ := NewSession("test-id", c1, c2)
+	session := NewSession("test-id", c1, c2)
 
 	s := newTestServer()
 	s.sessions[session.ID] = session
@@ -207,8 +171,8 @@ func TestCleanupClient_ParksInDisconnectedSlots(t *testing.T) {
 
 	s.cleanupClient(c1)
 
-	if _, exists := s.disconnectedSlots["alice"]; !exists {
-		t.Error("expected alice in disconnectedSlots after cleanup")
+	if _, exists := s.disconnectedSessions["alice"]; !exists {
+		t.Error("expected alice in disconnectedSessions after cleanup")
 	}
 	if _, exists := s.sessions[session.ID]; !exists {
 		t.Error("expected session to remain in sessions map during reconnect window")

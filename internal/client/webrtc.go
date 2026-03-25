@@ -13,7 +13,7 @@ import (
 // existing TCP connection as the signaling channel. Once the DataChannel is open,
 // onReady is called with a send function that routes MIDI bytes directly peer-to-peer,
 // bypassing the TCP relay server.
-func (c *Client) StartWebRTC(onReady func(send func([]byte) error), onFailed func()) error {
+func (c *Client) StartWebRTC(onReady func(send func([]byte) error)) (retErr error) {
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
 			{URLs: []string{"stun:stun.l.google.com:19302"}},
@@ -22,11 +22,16 @@ func (c *Client) StartWebRTC(onReady func(send func([]byte) error), onFailed fun
 	if err != nil {
 		return fmt.Errorf("create peer connection: %w", err)
 	}
+	defer func() {
+		if retErr != nil {
+			pc.Close()
+		}
+	}()
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		if state == webrtc.PeerConnectionStateFailed {
-			onFailed()
-		}
+		// if state == webrtc.PeerConnectionStateFailed {
+		// 	onFailed()
+		// }
 		log.Printf("WebRTC: %s", state)
 	})
 
@@ -48,8 +53,6 @@ func (c *Client) StartWebRTC(onReady func(send func([]byte) error), onFailed fun
 		})
 	}
 
-	// TODO(human): implement the offer/answer exchange based on c.IsOfferer().
-	//
 	// Helper — marshal LocalDescription and send it over TCP:
 	sendSDP := func(msgType byte) error {
 		sdp, err := json.Marshal(pc.LocalDescription())

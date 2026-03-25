@@ -8,7 +8,6 @@ import (
 	"log"
 	"math/rand"
 	"net"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -18,20 +17,18 @@ import (
 	"github.com/jj-attaq/synth-stream/internal/protocol"
 )
 
-var usernameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{4,}$`)
-
 const codeChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 const codeLen = 6
 
 type Server struct {
-	clients           map[string]*Client
-	sessions          map[string]*Session
-	pendingSessions   map[string]*Client
-	disconnectedSlots map[string]*Session
-	reconnectCancels  map[string]context.CancelFunc
-	mu                sync.RWMutex
-	listener          net.Listener
-	jwtSecret         string
+	clients              map[string]*Client
+	sessions             map[string]*Session
+	pendingSessions      map[string]*Client
+	disconnectedSessions map[string]*Session
+	reconnectCancels     map[string]context.CancelFunc
+	mu                   sync.RWMutex
+	listener             net.Listener
+	jwtSecret            string
 }
 
 func generateSessionCode() string {
@@ -64,14 +61,14 @@ func (s *Server) handleSessionCreate(client *Client) (string, error) {
 func (s *Server) handleSessionJoin(joiner *Client, code string) error {
 	s.mu.Lock()
 
-	// Reconnect path: if this username has a session parked in disconnectedSlots,
+	// Reconnect path: if this username has a session parked in disconnectedSessions,
 	// restore the session regardless of the code supplied.
-	if session, exists := s.disconnectedSlots[joiner.Username]; exists {
+	if session, exists := s.disconnectedSessions[joiner.Username]; exists {
 		if err := session.ReplaceClient(joiner.Username, joiner); err != nil {
 			s.mu.Unlock()
 			return fmt.Errorf("ReplaceClient: %w", err)
 		}
-		delete(s.disconnectedSlots, joiner.Username)
+		delete(s.disconnectedSessions, joiner.Username)
 		if cancel, ok := s.reconnectCancels[joiner.Username]; ok {
 			cancel()
 			delete(s.reconnectCancels, joiner.Username)
@@ -102,11 +99,7 @@ func (s *Server) handleSessionJoin(joiner *Client, code string) error {
 		return fmt.Errorf("create uuid: %w", err)
 	}
 
-	session, err := NewSession(id.String(), creator, joiner)
-	if err != nil {
-		s.mu.Unlock()
-		return fmt.Errorf("create session: %w", err)
-	}
+	session := NewSession(id.String(), creator, joiner)
 	s.addSessionLocked(session)
 	s.mu.Unlock()
 
@@ -136,13 +129,13 @@ func New(address, jwtSecret string) (*Server, error) {
 	}
 
 	return &Server{
-		clients:           make(map[string]*Client),
-		sessions:          make(map[string]*Session),
-		pendingSessions:   make(map[string]*Client),
-		disconnectedSlots: make(map[string]*Session),
-		reconnectCancels:  make(map[string]context.CancelFunc),
-		listener:          listener,
-		jwtSecret:         jwtSecret,
+		clients:              make(map[string]*Client),
+		sessions:             make(map[string]*Session),
+		pendingSessions:      make(map[string]*Client),
+		disconnectedSessions: make(map[string]*Session),
+		reconnectCancels:     make(map[string]context.CancelFunc),
+		listener:             listener,
+		jwtSecret:            jwtSecret,
 	}, nil
 }
 
@@ -241,11 +234,7 @@ func (s *Server) registerConnection(conn net.Conn) (*Client, error) {
 		return nil, fmt.Errorf("invalid token: %w", err)
 	}
 
-	client, err := NewClient(username, conn)
-	if err != nil {
-		log.Printf("Could not create client for user: %s", username)
-		return nil, err
-	}
+	client := NewClient(username, conn)
 
 	if errMsg := s.registerClient(client); errMsg != "" {
 		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:"+errMsg))
@@ -355,13 +344,13 @@ func (s *Server) cleanupClient(client *Client) {
 		}
 
 		// Cancel any stale timer goroutine from a previous disconnect.
-		if prev, ok := s.reconnectCancels[client.Username]; ok {
-			prev()
+		if prevCancel, ok := s.reconnectCancels[client.Username]; ok {
+			prevCancel()
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		s.reconnectCancels[client.Username] = cancel
 
-		s.disconnectedSlots[client.Username] = client.Session
+		s.disconnectedSessions[client.Username] = client.Session
 		client.Session = nil
 		s.mu.Unlock()
 
@@ -376,7 +365,7 @@ func (s *Server) cleanupClient(client *Client) {
 			s.mu.Lock()
 			defer s.mu.Unlock()
 
-			session, stillWaiting := s.disconnectedSlots[client.Username]
+			session, stillWaiting := s.disconnectedSessions[client.Username]
 			if !stillWaiting {
 				return
 			}
@@ -384,18 +373,8 @@ func (s *Server) cleanupClient(client *Client) {
 			protocol.WriteMessage(partner.Conn, protocol.TypeText, []byte(client.Username+" has permanently disconnected"))
 			partner.Session = nil
 			s.removeSessionLocked(session)
-			delete(s.disconnectedSlots, client.Username)
+			delete(s.disconnectedSessions, client.Username)
 			delete(s.reconnectCancels, client.Username)
 		}()
 	}
-}
-
-// validateUsername checks if a username is valid
-// Returns an error message to send back to the client, or "" if valid.
-func validateUsername(username string) string {
-	if !usernameRegex.MatchString(username) {
-		return "username must be at least 4 characters and contain only letters, numbers, underscores, or hyphens"
-	}
-
-	return ""
 }

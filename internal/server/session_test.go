@@ -8,10 +8,7 @@ func TestNewSession(t *testing.T) {
 	c1 := &Client{Username: "alice"}
 	c2 := &Client{Username: "bob"}
 
-	session, err := NewSession("test-id", c1, c2)
-	if err != nil {
-		t.Fatalf("NewSession() error = %v", err)
-	}
+	session := NewSession("test-id", c1, c2)
 	if session.ID != "test-id" {
 		t.Errorf("ID = %q, want %q", session.ID, "test-id")
 	}
@@ -26,7 +23,7 @@ func TestNewSession(t *testing.T) {
 func TestGetPartner_Client1GetsClient2(t *testing.T) {
 	c1 := &Client{Username: "alice"}
 	c2 := &Client{Username: "bob"}
-	session, _ := NewSession("id", c1, c2)
+	session := NewSession("id", c1, c2)
 
 	partner, err := session.GetPartner(c1)
 	if err != nil {
@@ -40,7 +37,7 @@ func TestGetPartner_Client1GetsClient2(t *testing.T) {
 func TestGetPartner_Client2GetsClient1(t *testing.T) {
 	c1 := &Client{Username: "alice"}
 	c2 := &Client{Username: "bob"}
-	session, _ := NewSession("id", c1, c2)
+	session := NewSession("id", c1, c2)
 
 	partner, err := session.GetPartner(c2)
 	if err != nil {
@@ -55,7 +52,7 @@ func TestGetPartner_NonMember(t *testing.T) {
 	c1 := &Client{Username: "alice"}
 	c2 := &Client{Username: "bob"}
 	stranger := &Client{Username: "eve"}
-	session, _ := NewSession("id", c1, c2)
+	session := NewSession("id", c1, c2)
 
 	_, err := session.GetPartner(stranger)
 	if err == nil {
@@ -76,7 +73,7 @@ func TestGetPartner_NilClients(t *testing.T) {
 func TestReplaceClient_ReplacesClient1(t *testing.T) {
 	c1 := &Client{Username: "alice"}
 	c2 := &Client{Username: "bob"}
-	session, _ := NewSession("id", c1, c2)
+	session := NewSession("id", c1, c2)
 
 	newAlice := &Client{Username: "alice"}
 	if err := session.ReplaceClient("alice", newAlice); err != nil {
@@ -93,7 +90,7 @@ func TestReplaceClient_ReplacesClient1(t *testing.T) {
 func TestReplaceClient_ReplacesClient2(t *testing.T) {
 	c1 := &Client{Username: "alice"}
 	c2 := &Client{Username: "bob"}
-	session, _ := NewSession("id", c1, c2)
+	session := NewSession("id", c1, c2)
 
 	newBob := &Client{Username: "bob"}
 	if err := session.ReplaceClient("bob", newBob); err != nil {
@@ -110,7 +107,7 @@ func TestReplaceClient_ReplacesClient2(t *testing.T) {
 func TestReplaceClient_NonMember(t *testing.T) {
 	c1 := &Client{Username: "alice"}
 	c2 := &Client{Username: "bob"}
-	session, _ := NewSession("id", c1, c2)
+	session := NewSession("id", c1, c2)
 
 	eve := &Client{Username: "eve"}
 	if err := session.ReplaceClient("eve", eve); err == nil {

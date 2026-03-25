@@ -116,16 +116,16 @@ func negotiateP2P(c *client.Client) (dcSend func([]byte) error, connDone <-chan 
 	dcReady := make(chan func([]byte) error, 1)
 	webrtcErr := make(chan error, 1)
 
-	onReady := func(localSend func([]byte) error) {
-		dcReady <- localSend
+	onReady := func(dcSend func([]byte) error) {
+		dcReady <- dcSend
 	}
-	onFailed := func() {
-		dcSend = c.SendMidi
-		log.Println("WebRTC failed — falling back to TCP relay")
-	}
+	// onFailed := func() {
+	// 	dcSend = c.SendMidi
+	// 	log.Println("WebRTC failed — falling back to TCP relay")
+	// }
 
 	go func() {
-		if err := c.StartWebRTC(onReady, onFailed); err != nil {
+		if err := c.StartWebRTC(onReady); err != nil {
 			webrtcErr <- err
 		}
 	}()
@@ -139,7 +139,6 @@ func negotiateP2P(c *client.Client) (dcSend func([]byte) error, connDone <-chan 
 	select {
 	case dcSend = <-dcReady:
 		log.Println("P2P connected — you can play")
-		// start CaptureInput here, using dcSend directly
 	case err = <-webrtcErr:
 		return nil, nil, fmt.Errorf("WebRTC failed: %w", err)
 	case <-time.After(15 * time.Second):
@@ -162,7 +161,6 @@ func startMIDI(inPortNumber int, localSend midi.MidiSender, dcSend func([]byte) 
 	if err != nil {
 		return nil, err
 	}
-	// defer stop()
 
 	return stop, nil
 }
@@ -190,7 +188,7 @@ func main() {
 	scanner.Scan()
 	password := scanner.Text()
 
-	token, err := login(username, password, "http://localhost:8081")
+	token, err := login(username, password, "http://localhost:"+os.Getenv("PORT"))
 	if err != nil {
 		log.Fatalf("login failed: %v", err)
 	}
@@ -220,15 +218,7 @@ func main() {
 
 	// Hand stdin to a single goroutine. All session/chat reads go through this channel.
 	// Only one goroutine ever reads from os.Stdin, eliminating scanner races on reconnect.
-
 	stdinCh := readStdin(scanner)
-	// stdinCh := make(chan string)
-	// go func() {
-	// 	for scanner.Scan() {
-	// 		stdinCh <- scanner.Text()
-	// 	}
-	// 	close(stdinCh)
-	// }()
 
 	// Server connection
 	var sessionCode string
@@ -237,7 +227,7 @@ func main() {
 			time.Sleep(2 * time.Second)
 			fmt.Printf("reconnecting (attempt %d/3)...\n", attempts+1)
 		}
-		code, err := connect(token, "localhost:8080", inPortNumber, localSend, sessionCode, stdinCh)
+		code, err := connect(token, "localhost:"+os.Getenv("PORT"), inPortNumber, localSend, sessionCode, stdinCh)
 		sessionCode = code
 		if err == nil {
 			break

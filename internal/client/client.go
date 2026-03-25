@@ -80,10 +80,15 @@ func (c *Client) SessionSetup(stdinCh <-chan string) error {
 			if err != nil {
 				return fmt.Errorf("read session response: %w", err)
 			}
+
 			msg := string(packet.Payload)
 			fmt.Println(msg)
 			if strings.HasPrefix(msg, "paired ") {
 				break
+			}
+
+			if msg, isError := strings.CutPrefix(msg, "error:"); isError {
+				return fmt.Errorf("%s", msg)
 			}
 
 			if code, found := strings.CutPrefix(msg, "session:created:"); found {
@@ -176,6 +181,7 @@ func (c *Client) ReadMessages() error {
 			select {
 			case c.sigCh <- packet:
 			default:
+				log.Printf("sigCh full, dropped packet type 0x%02x", packet.Type)
 			}
 		}
 	}
@@ -183,10 +189,7 @@ func (c *Client) ReadMessages() error {
 
 // SendMidi sends raw MIDI bytes to the partner over the network.
 func (c *Client) SendMidi(data []byte) error {
-	if err := protocol.WriteMessage(c.conn, protocol.TypeMidi, data); err != nil {
-		return err
-	}
-	return nil
+	return protocol.WriteMessage(c.conn, protocol.TypeMidi, data)
 }
 
 // ChatLoop reads lines from stdinCh and sends them to the partner.

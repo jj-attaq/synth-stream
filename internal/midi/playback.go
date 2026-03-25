@@ -2,6 +2,7 @@ package midi
 
 import (
 	"fmt"
+	"log"
 
 	gomidi "gitlab.com/gomidi/midi/v2"
 )
@@ -19,7 +20,7 @@ func OpenOutput(portNumber int) (MidiSender, error) {
 		return nil, fmt.Errorf("could not open sender for port %d: %w", portNumber, err)
 	}
 
-	fmt.Printf("Output open: %s\n", outPort)
+	log.Printf("Output open: %s\n", outPort)
 	return func(data []byte) error {
 		return sender(gomidi.Message(data))
 	}, nil

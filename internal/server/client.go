@@ -9,7 +9,7 @@ type Client struct {
 	pairedCh chan struct{}
 }
 
-func NewClient(username string, conn net.Conn) (*Client, error) {
+func NewClient(username string, conn net.Conn) *Client {
 	client := Client{
 		Username: username,
 		Conn:     conn,
@@ -17,5 +17,5 @@ func NewClient(username string, conn net.Conn) (*Client, error) {
 		pairedCh: make(chan struct{}, 1),
 	}
 
-	return &client, nil
+	return &client
 }

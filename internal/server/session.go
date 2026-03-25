@@ -8,7 +8,7 @@ type Session struct {
 	Client2 *Client
 }
 
-func NewSession(id string, c1, c2 *Client) (*Session, error) {
+func NewSession(id string, c1, c2 *Client) *Session {
 	session := &Session{
 		ID:      id,
 		Client1: c1,
@@ -18,7 +18,7 @@ func NewSession(id string, c1, c2 *Client) (*Session, error) {
 	c1.Session = session
 	c2.Session = session
 
-	return session, nil
+	return session
 }
 
 func (s *Session) GetPartner(client *Client) (*Client, error) {
