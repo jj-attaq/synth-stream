@@ -19,9 +19,10 @@ type Client struct {
 	token       string
 	sessionCode string
 	isOfferer   bool
-	midiSend    func([]byte) error
+	midiOutput  func([]byte) error
 	pingCh      chan time.Duration
 	sigCh       chan protocol.Packet
+	quit        bool
 }
 
 func New(token string, address string) (*Client, error) {
@@ -38,8 +39,8 @@ func New(token string, address string) (*Client, error) {
 	}, nil
 }
 
-func (c *Client) SetMidiSend(send func([]byte) error) {
-	c.midiSend = send
+func (c *Client) SetMidiOutput(send func([]byte) error) {
+	c.midiOutput = send
 }
 
 func (c *Client) Close() {
@@ -130,6 +131,10 @@ func (c *Client) IsOfferer() bool {
 	return c.isOfferer
 }
 
+func (c *Client) IsQuit() bool {
+	return c.quit
+}
+
 func (c *Client) SigCh() <-chan protocol.Packet {
 	return c.sigCh
 }
@@ -168,8 +173,8 @@ func (c *Client) ReadMessages() error {
 		case protocol.TypeText:
 			fmt.Printf("\r%s\n> ", string(packet.Payload))
 		case protocol.TypeMidi:
-			if c.midiSend != nil {
-				if err := c.midiSend(packet.Payload); err != nil {
+			if c.midiOutput != nil {
+				if err := c.midiOutput(packet.Payload); err != nil {
 					log.Printf("midi playback error: %v", err)
 				}
 			}
@@ -215,6 +220,11 @@ func (c *Client) ChatLoop(ctx context.Context, stdinCh <-chan string) {
 			if line == "/disconnect" {
 				c.Close()
 				log.Printf("disconnected")
+				return
+			}
+			if line == "/quit" {
+				c.quit = true
+				c.Close()
 				return
 			}
 			if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte(line)); err != nil {

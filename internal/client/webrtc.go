@@ -45,8 +45,8 @@ func (c *Client) StartWebRTC(onReady func(send func([]byte) error)) (retErr erro
 			})
 		})
 		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-			if c.midiSend != nil {
-				if err := c.midiSend(msg.Data); err != nil {
+			if c.midiOutput != nil {
+				if err := c.midiOutput(msg.Data); err != nil {
 					log.Printf("p2p midi playback error: %v", err)
 				}
 			}

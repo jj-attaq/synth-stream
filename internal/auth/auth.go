@@ -13,7 +13,7 @@ import (
 type TokenType string
 
 const (
-	// TokenTypeAccess -
+	// TokenTypeAccess identifies JWTs issued by this server as access tokens.
 	TokenTypeAccess TokenType = "synth-stream--access"
 )
 

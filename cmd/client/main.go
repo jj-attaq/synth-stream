@@ -15,6 +15,7 @@ import (
 	"github.com/jj-attaq/synth-stream/internal/client"
 	"github.com/jj-attaq/synth-stream/internal/midi"
 
+	"github.com/joho/godotenv"
 	gomidi "gitlab.com/gomidi/midi/v2"
 	_ "gitlab.com/gomidi/midi/v2/drivers/rtmididrv"
 )
@@ -60,18 +61,18 @@ func connect(token, address string,
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	c, err := setup(token, address, sessionCode, stdinCh)
+	c, err := dialAndPair(token, address, sessionCode, stdinCh)
 	if err != nil {
 		return "", err
 	}
 	defer c.Close()
 
-	// SetMidiSend must be called before negotiateP2P — ReadMessages starts inside
-	// negotiateP2P and calls midiSend when partner MIDI arrives. The localSend function
+	// SetMidiOutput must be called before negotiateP2P — ReadMessages starts inside
+	// negotiateP2P and calls midiOutput when partner MIDI arrives. The localSend function
 	// wraps midi.OpenOutput(), which routes incoming MIDI to the configured virtual
 	// MIDI output port for the DAW to receive. Device selection happens in main()
 	// before any network connection is established.
-	c.SetMidiSend(localSend)
+	c.SetMidiOutput(localSend)
 
 	dcSend, connDone, err := negotiateP2P(c)
 	if err != nil {
@@ -84,12 +85,17 @@ func connect(token, address string,
 	}
 	defer stop()
 
-	run(ctx, c, stdinCh)
+	beginChat(ctx, c, stdinCh)
 
-	return c.SessionCode(), <-connDone
+	code := c.SessionCode()
+	connErr := <-connDone
+	if c.IsQuit() {
+		return "", nil
+	}
+	return code, connErr
 }
 
-func setup(token, address, sessionCode string, stdinCh <-chan string) (*client.Client, error) {
+func dialAndPair(token, address, sessionCode string, stdinCh <-chan string) (*client.Client, error) {
 	c, err := client.New(token, address)
 	if err != nil {
 		return nil, err
@@ -165,7 +171,7 @@ func startMIDI(inPortNumber int, localSend midi.MidiSender, dcSend func([]byte) 
 	return stop, nil
 }
 
-func run(ctx context.Context, c *client.Client, stdinCh <-chan string) {
+func beginChat(ctx context.Context, c *client.Client, stdinCh <-chan string) {
 	ping, err := c.Ping()
 	if err != nil {
 		log.Printf("ping error: %v", err)
@@ -177,6 +183,7 @@ func run(ctx context.Context, c *client.Client, stdinCh <-chan string) {
 }
 
 func main() {
+	godotenv.Load()
 	scanner := bufio.NewScanner(os.Stdin)
 
 	// Auth — read synchronously before handing stdin to the channel.
@@ -188,7 +195,7 @@ func main() {
 	scanner.Scan()
 	password := scanner.Text()
 
-	token, err := login(username, password, "http://localhost:"+os.Getenv("PORT"))
+	token, err := login(username, password, "http://localhost:"+os.Getenv("API_PORT"))
 	if err != nil {
 		log.Fatalf("login failed: %v", err)
 	}
