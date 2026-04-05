@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -122,8 +123,13 @@ func (s *Server) removePendingSession(code string) {
 	log.Printf("pending session %s expired\n", code)
 }
 
-func New(address, jwtSecret string) (*Server, error) {
-	listener, err := net.Listen("tcp", address)
+func New(address, jwtSecret, certFile, keyFile string) (*Server, error) {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("could not load TLS cert: %w", err)
+	}
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert}}
+	listener, err := tls.Listen("tcp", address, tlsConfig)
 	if err != nil {
 		return nil, err
 	}

@@ -1,5 +1,6 @@
 .DS_Store
 *.env
+*.pem
 mentor
 CLAUDE.md
 .claude*
@@ -8,3 +9,4 @@ chart
 step13_plan.md
 chirpy/
 toy_projects/
+learning/

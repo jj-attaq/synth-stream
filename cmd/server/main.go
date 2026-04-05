@@ -25,7 +25,7 @@ func main() {
 
 	queries := db.New(pool)
 
-	srv, err := server.New(":"+os.Getenv("PORT"), os.Getenv("JWT_SECRET"))
+	srv, err := server.New(":"+os.Getenv("PORT"), os.Getenv("JWT_SECRET"), os.Getenv("CERT_FILE"), os.Getenv("KEY_FILE"))
 	if err != nil {
 		log.Fatal(err)
 	}

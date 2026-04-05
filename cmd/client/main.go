@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -96,7 +97,8 @@ func connect(token, address string,
 }
 
 func dialAndPair(token, address, sessionCode string, stdinCh <-chan string) (*client.Client, error) {
-	c, err := client.New(token, address)
+	tlsConfig := &tls.Config{InsecureSkipVerify: os.Getenv("TLS_INSECURE") == "true"}
+	c, err := client.New(token, address, tlsConfig)
 	if err != nil {
 		return nil, err
 	}

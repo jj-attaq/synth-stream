@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -25,8 +26,8 @@ type Client struct {
 	quit        bool
 }
 
-func New(token string, address string) (*Client, error) {
-	conn, err := net.Dial("tcp", address)
+func New(token string, address string, tlsConfig *tls.Config) (*Client, error) {
+	conn, err := tls.Dial("tcp", address, tlsConfig)
 	if err != nil {
 		return nil, fmt.Errorf("could not connect: %w", err)
 	}

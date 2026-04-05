@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/jj-attaq/synth-stream/internal/protocol"
 	"github.com/pion/webrtc/v4"
@@ -15,8 +16,29 @@ import (
 // bypassing the TCP relay server.
 func (c *Client) StartWebRTC(onReady func(send func([]byte) error)) (retErr error) {
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{
+		ICETransportPolicy: webrtc.ICETransportPolicyRelay,
 		ICEServers: []webrtc.ICEServer{
 			{URLs: []string{"stun:stun.l.google.com:19302"}},
+			{
+				URLs:       []string{"turn:global.relay.metered.ca:80"},
+				Username:   os.Getenv("TURN_USER"),
+				Credential: os.Getenv("TURN_PASS"),
+			},
+			{
+				URLs:       []string{"turn:global.relay.metered.ca:80?transport=tcp"},
+				Username:   os.Getenv("TURN_USER"),
+				Credential: os.Getenv("TURN_PASS"),
+			},
+			{
+				URLs:       []string{"turn:global.relay.metered.ca:443"},
+				Username:   os.Getenv("TURN_USER"),
+				Credential: os.Getenv("TURN_PASS"),
+			},
+			{
+				URLs:       []string{"turns:global.relay.metered.ca:443?transport=tcp"},
+				Username:   os.Getenv("TURN_USER"),
+				Credential: os.Getenv("TURN_PASS"),
+			},
 		},
 	})
 	if err != nil {
