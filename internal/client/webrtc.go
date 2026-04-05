@@ -16,7 +16,6 @@ import (
 // bypassing the TCP relay server.
 func (c *Client) StartWebRTC(onReady func(send func([]byte) error)) (retErr error) {
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{
-		ICETransportPolicy: webrtc.ICETransportPolicyRelay,
 		ICEServers: []webrtc.ICEServer{
 			{URLs: []string{"stun:stun.l.google.com:19302"}},
 			{
