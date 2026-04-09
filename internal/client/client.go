@@ -27,7 +27,13 @@ type Client struct {
 }
 
 func New(token string, address string, tlsConfig *tls.Config) (*Client, error) {
-	conn, err := tls.Dial("tcp", address, tlsConfig)
+	var conn net.Conn
+	var err error
+	if tlsConfig != nil {
+		conn, err = tls.Dial("tcp", address, tlsConfig)
+	} else {
+		conn, err = net.Dial("tcp", address)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("could not connect: %w", err)
 	}

@@ -124,12 +124,17 @@ func (s *Server) removePendingSession(code string) {
 }
 
 func New(address, jwtSecret, certFile, keyFile string) (*Server, error) {
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("could not load TLS cert: %w", err)
+	var listener net.Listener
+	var err error
+	if certFile != "" && keyFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("could not load TLS cert: %w", err)
+		}
+		listener, err = tls.Listen("tcp", address, &tls.Config{Certificates: []tls.Certificate{cert}})
+	} else {
+		listener, err = net.Listen("tcp", address)
 	}
-	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert}}
-	listener, err := tls.Listen("tcp", address, tlsConfig)
 	if err != nil {
 		return nil, err
 	}

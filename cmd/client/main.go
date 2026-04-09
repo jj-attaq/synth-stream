@@ -97,7 +97,11 @@ func connect(token, address string,
 }
 
 func dialAndPair(token, address, sessionCode string, stdinCh <-chan string) (*client.Client, error) {
-	tlsConfig := &tls.Config{InsecureSkipVerify: os.Getenv("TLS_INSECURE") == "true"}
+	var tlsConfig *tls.Config
+	if os.Getenv("CERT_FILE") != "" {
+		tlsConfig = &tls.Config{InsecureSkipVerify: os.Getenv("TLS_INSECURE") == "true"}
+	}
+
 	c, err := client.New(token, address, tlsConfig)
 	if err != nil {
 		return nil, err
@@ -186,6 +190,11 @@ func beginChat(ctx context.Context, c *client.Client, stdinCh <-chan string) {
 
 func main() {
 	godotenv.Load()
+	host := os.Getenv("SERVER_HOST")
+	if host == "" {
+		host = "localhost"
+	}
+
 	scanner := bufio.NewScanner(os.Stdin)
 
 	// Auth — read synchronously before handing stdin to the channel.
@@ -197,7 +206,8 @@ func main() {
 	scanner.Scan()
 	password := scanner.Text()
 
-	token, err := login(username, password, "http://localhost:"+os.Getenv("API_PORT"))
+	// token, err := login(username, password, "http://"+host+":"+os.Getenv("API_PORT"))
+	token, err := login(username, password, os.Getenv("API_URL"))
 	if err != nil {
 		log.Fatalf("login failed: %v", err)
 	}
@@ -236,7 +246,7 @@ func main() {
 			time.Sleep(2 * time.Second)
 			fmt.Printf("reconnecting (attempt %d/3)...\n", attempts+1)
 		}
-		code, err := connect(token, "localhost:"+os.Getenv("PORT"), inPortNumber, localSend, sessionCode, stdinCh)
+		code, err := connect(token, host+":"+os.Getenv("PORT"), inPortNumber, localSend, sessionCode, stdinCh)
 		sessionCode = code
 		if err == nil {
 			break
