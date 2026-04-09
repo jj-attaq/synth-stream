@@ -89,6 +89,10 @@ func (c *Client) SessionSetup(stdinCh <-chan string) error {
 				return fmt.Errorf("read session response: %w", err)
 			}
 
+			if packet.Type != protocol.TypeText {
+				continue
+			}
+
 			msg := string(packet.Payload)
 			fmt.Println(msg)
 			if strings.HasPrefix(msg, "paired ") {
@@ -140,6 +144,14 @@ func (c *Client) IsOfferer() bool {
 
 func (c *Client) IsQuit() bool {
 	return c.quit
+}
+
+// Quit sends session:leave to the server and closes the connection cleanly.
+// Called by both the /quit command and the SIGINT handler.
+func (c *Client) Quit() {
+	protocol.WriteMessage(c.conn, protocol.TypeText, []byte("session:leave"))
+	c.quit = true
+	c.Close()
 }
 
 func (c *Client) SigCh() <-chan protocol.Packet {
@@ -229,9 +241,8 @@ func (c *Client) ChatLoop(ctx context.Context, stdinCh <-chan string) {
 				log.Printf("disconnected")
 				return
 			}
-			if line == "/quit" {
-				c.quit = true
-				c.Close()
+			if line == "/quit" || line == "/q" || line == "/exit" {
+				c.Quit()
 				return
 			}
 			if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte(line)); err != nil {

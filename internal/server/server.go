@@ -280,13 +280,28 @@ func (s *Server) performSessionSetup(client *Client) error {
 			log.Printf("session create error: %v", err)
 			return err
 		}
-		select {
-		case <-client.pairedCh:
-			// partner joined, proceed to message loop
-		case <-time.After(10 * time.Minute):
-			s.removePendingSession(sessionCode)
-			protocol.WriteMessage(client.Conn, protocol.TypeText, []byte("error:session expired"))
-			return fmt.Errorf("session expired")
+		// NewTimer fires once after 10 minutes (session expiry).
+		// NewTicker fires repeatedly every 5 seconds (heartbeat).
+		timeout := time.NewTimer(10 * time.Minute)
+		defer timeout.Stop()
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-client.pairedCh:
+				return nil
+			case <-timeout.C:
+				s.removePendingSession(sessionCode)
+				protocol.WriteMessage(client.Conn, protocol.TypeText, []byte("error:session expired"))
+				return fmt.Errorf("session expired")
+			case <-ticker.C:
+				// Writing to a dead TCP socket fails immediately, detecting a dropped
+				// creator before the 10-minute timeout would otherwise fire.
+				if err := protocol.WriteMessage(client.Conn, protocol.TypePing, nil); err != nil {
+					s.removePendingSession(sessionCode)
+					return fmt.Errorf("creator disconnected while waiting: %w", err)
+				}
+			}
 		}
 	case strings.HasPrefix(cmd, "session:join:"):
 		code := strings.TrimPrefix(cmd, "session:join:")
@@ -339,53 +354,83 @@ func (s *Server) handleConnection(conn net.Conn) {
 			continue
 		}
 
+		// Intentional quit: tear down cleanly so neither partner lands in
+		// disconnectedSessions, preventing a false reconnect next session.
+		if message.Type == protocol.TypeText && string(message.Payload) == "session:leave" {
+			s.teardownSession(client)
+			return
+		}
+
 		s.routeToPartner(client, message)
 	}
+}
+
+// teardownSession handles an intentional quit. It clears both partners'
+// session pointers and removes the session entirely, so neither user is
+// parked in disconnectedSessions and can start a fresh session immediately.
+func (s *Server) teardownSession(client *Client) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if client.Session == nil {
+		return
+	}
+
+	partner, _ := client.Session.GetPartner(client)
+	protocol.WriteMessage(partner.Conn, protocol.TypeText, []byte(client.Username+" has left the session"))
+
+	session := client.Session
+	client.Session = nil
+	partner.Session = nil
+	s.removeSessionLocked(session)
 }
 
 func (s *Server) cleanupClient(client *Client) {
 	s.mu.Lock()
 
-	if client.Session != nil {
-		partner, _ := client.Session.GetPartner(client)
-
-		msg := []byte(client.Username + " has been disconnected, 2 minutes to reconnect.\n")
-		if err := protocol.WriteMessage(partner.Conn, protocol.TypeText, msg); err != nil {
-			log.Printf("failed to notify %s of disconnect: %v", partner.Username, err)
-		}
-
-		// Cancel any stale timer goroutine from a previous disconnect.
-		if prevCancel, ok := s.reconnectCancels[client.Username]; ok {
-			prevCancel()
-		}
-		ctx, cancel := context.WithCancel(context.Background())
-		s.reconnectCancels[client.Username] = cancel
-
-		s.disconnectedSessions[client.Username] = client.Session
-		client.Session = nil
+	if client.Session == nil {
 		s.mu.Unlock()
-
-		go func() {
-			select {
-			case <-ctx.Done():
-				// Cancelled: client reconnected or disconnected again (new timer owns cleanup).
-				return
-			case <-time.After(2 * time.Minute):
-			}
-
-			s.mu.Lock()
-			defer s.mu.Unlock()
-
-			session, stillWaiting := s.disconnectedSessions[client.Username]
-			if !stillWaiting {
-				return
-			}
-			// Client never came back — clean up for real.
-			protocol.WriteMessage(partner.Conn, protocol.TypeText, []byte(client.Username+" has permanently disconnected"))
-			partner.Session = nil
-			s.removeSessionLocked(session)
-			delete(s.disconnectedSessions, client.Username)
-			delete(s.reconnectCancels, client.Username)
-		}()
+		return
 	}
+
+	partner, _ := client.Session.GetPartner(client)
+
+	msg := []byte(client.Username + " has been disconnected, 2 minutes to reconnect.\n")
+	if err := protocol.WriteMessage(partner.Conn, protocol.TypeText, msg); err != nil {
+		log.Printf("failed to notify %s of disconnect: %v", partner.Username, err)
+	}
+
+	// Cancel any stale timer goroutine from a previous disconnect.
+	if prevCancel, ok := s.reconnectCancels[client.Username]; ok {
+		prevCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.reconnectCancels[client.Username] = cancel
+
+	s.disconnectedSessions[client.Username] = client.Session
+	client.Session = nil
+	s.mu.Unlock()
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			// Cancelled: client reconnected or disconnected again (new timer owns cleanup).
+			return
+		case <-time.After(2 * time.Minute):
+		}
+
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		session, stillWaiting := s.disconnectedSessions[client.Username]
+		if !stillWaiting {
+			return
+		}
+		// Client never came back — clean up for real.
+		protocol.WriteMessage(partner.Conn, protocol.TypeText, []byte(client.Username+" has permanently disconnected"))
+		partner.Session = nil
+		s.removeSessionLocked(session)
+		delete(s.disconnectedSessions, client.Username)
+		delete(s.reconnectCancels, client.Username)
+	}()
 }

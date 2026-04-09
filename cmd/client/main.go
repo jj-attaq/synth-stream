@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"time"
 
@@ -57,7 +58,8 @@ func connect(token, address string,
 	inPortNumber int,
 	localSend midi.MidiSender,
 	sessionCode string,
-	stdinCh <-chan string) (string, error) {
+	stdinCh <-chan string,
+	sigCh <-chan os.Signal) (string, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -89,11 +91,17 @@ func connect(token, address string,
 	beginChat(ctx, c, stdinCh)
 
 	code := c.SessionCode()
-	connErr := <-connDone
-	if c.IsQuit() {
+	select {
+	case connErr := <-connDone:
+		if c.IsQuit() {
+			return "", nil
+		}
+		return code, connErr
+	case <-sigCh:
+		c.Quit()
+		<-connDone // wait for ReadMessages to drain
 		return "", nil
 	}
-	return code, connErr
 }
 
 func dialAndPair(token, address, sessionCode string, stdinCh <-chan string) (*client.Client, error) {
@@ -168,6 +176,8 @@ func startMIDI(inPortNumber int, localSend midi.MidiSender, dcSend func([]byte) 
 		}
 		if err := dcSend(data); err != nil {
 			log.Printf("midi network send error: %v", err)
+		} else {
+			log.Printf("MIDI sent: %d bytes %v", len(data), data)
 		}
 	})
 	if err != nil {
@@ -239,6 +249,12 @@ func main() {
 	// Only one goroutine ever reads from os.Stdin, eliminating scanner races on reconnect.
 	stdinCh := readStdin(scanner)
 
+	// Catch Ctrl-C so we can send session:leave before exiting.
+	// Buffered so the signal is not dropped if we're not yet in the select.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	defer signal.Stop(sigCh)
+
 	// Server connection
 	var sessionCode string
 	for attempts := range 3 {
@@ -246,7 +262,7 @@ func main() {
 			time.Sleep(2 * time.Second)
 			fmt.Printf("reconnecting (attempt %d/3)...\n", attempts+1)
 		}
-		code, err := connect(token, host+":"+os.Getenv("PORT"), inPortNumber, localSend, sessionCode, stdinCh)
+		code, err := connect(token, host+":"+os.Getenv("PORT"), inPortNumber, localSend, sessionCode, stdinCh, sigCh)
 		sessionCode = code
 		if err == nil {
 			break

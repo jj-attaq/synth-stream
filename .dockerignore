@@ -1,0 +1,13 @@
+.env
+*.pem
+*.env
+CLAUDE.md
+.claude*
+*.txt
+learning/
+toy_projects/
+chirpy/
+mentor
+chart
+.git/
+.DS_Store
