@@ -116,7 +116,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusUnauthorized, "Unauthorized", err)
 		return
 	}
-	accessToken, err := auth.MakeJWT(user.Username, s.jwtSecret, time.Hour)
+	accessToken, err := auth.MakeJWT(uuid.UUID(user.ID.Bytes), user.Username, s.jwtSecret, time.Hour)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't create token", err)
 		return

@@ -7,10 +7,16 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type TokenType string
+
+type CustomClaims struct {
+	jwt.RegisteredClaims
+	Username string `json:"username"`
+}
 
 const (
 	// TokenTypeAccess identifies JWTs issued by this server as access tokens.
@@ -33,13 +39,16 @@ func CheckPasswordHash(password, hash string) error {
 }
 
 // MakeJWT issues a signed HS256 JWT with username as the Subject.
-func MakeJWT(username string, tokenSecret string, expiresIn time.Duration) (string, error) {
+func MakeJWT(userID uuid.UUID, username string, tokenSecret string, expiresIn time.Duration) (string, error) {
 	signingKey := []byte(tokenSecret)
-	claims := jwt.RegisteredClaims{
-		Issuer:    string(TokenTypeAccess),
-		IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
-		ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(expiresIn)),
-		Subject:   username,
+	claims := CustomClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    string(TokenTypeAccess),
+			IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(expiresIn)),
+			Subject:   userID.String(),
+		},
+		Username: username,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 
@@ -48,7 +57,7 @@ func MakeJWT(username string, tokenSecret string, expiresIn time.Duration) (stri
 
 // ValidateJWT parses and validates a JWT, returning the username stored in the Subject claim.
 func ValidateJWT(tokenString, tokenSecret string) (string, error) {
-	claims := &jwt.RegisteredClaims{}
+	claims := &CustomClaims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, errors.New("unexpected signing method")
@@ -67,7 +76,7 @@ func ValidateJWT(tokenString, tokenSecret string) (string, error) {
 		return "", errors.New("invalid issuer")
 	}
 
-	return claims.Subject, nil
+	return claims.Username, nil
 }
 
 // GetBearerToken extracts the token from an "Authorization: Bearer <token>" header.
