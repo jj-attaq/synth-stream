@@ -87,7 +87,7 @@ While in a session you can type messages to chat with your partner. Special comm
 
 | Command | What it does |
 |---|---|
-| `/ping` | Measure round-trip latency to the server |
+| `/ping` | Measure round-trip latency to the relay server |
 | `/quit` | Leave the session cleanly and exit |
 
 Press **Ctrl-C** at any time to exit — the session is closed gracefully.
@@ -111,7 +111,7 @@ TCP server (:8080)  — real-time MIDI relay and WebRTC signaling
 
 The client logs in via HTTP to get a JWT, then presents that token to the TCP server during the handshake. The two servers never talk directly — the token carries the user's identity between them.
 
-Once two musicians are paired, the TCP connection is used only for signaling (exchanging the WebRTC offer/answer). After that, MIDI flows peer-to-peer via a WebRTC DataChannel. If the WebRTC negotiation fails or times out (15 seconds), the session falls back to routing MIDI through the TCP server.
+Once two musicians are paired, the TCP connection is used only for signaling (exchanging the WebRTC offer/answer). After that, MIDI and chat both flow peer-to-peer via dedicated WebRTC DataChannels. If WebRTC negotiation fails or times out (15 seconds), both fall back to routing through the TCP server automatically.
 
 **Stack:** Go, PostgreSQL, sqlc, pion/webrtc, Fly.io, Supabase
 

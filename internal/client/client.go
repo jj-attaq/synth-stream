@@ -205,10 +205,12 @@ func (c *Client) ReadMessages() error {
 	for {
 		packet, err := protocol.ReadMessage(c.conn)
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				log.Printf("read error: %v", err)
+			if !c.quit {
+				if !errors.Is(err, io.EOF) {
+					log.Printf("read error: %v", err)
+				}
+				fmt.Println("\ndisconnected from server")
 			}
-			fmt.Println("\ndisconnected from server")
 			return err
 		}
 
