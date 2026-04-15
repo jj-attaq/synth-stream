@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,12 +15,22 @@ import (
 	"time"
 
 	"github.com/jj-attaq/synth-stream/internal/protocol"
+	"github.com/pion/webrtc/v4"
 )
+
+// ChatMessage is the JSON payload for chat messages sent over TCP and WebRTC DataChannel.
+// Embedding identity in the payload lets both transports remain format-agnostic.
+type ChatMessage struct {
+	From string `json:"from"`
+	Text string `json:"text"`
+}
 
 type Client struct {
 	mu          sync.Mutex
 	conn        net.Conn
+	pc          *webrtc.PeerConnection
 	token       string
+	username    string
 	sessionCode string
 	isOfferer   bool
 	midiOutput  func([]byte) error
@@ -53,7 +64,17 @@ func (c *Client) SetMidiOutput(send func([]byte) error) {
 	c.midiOutput = send
 }
 
+func (c *Client) SetUsername(username string) {
+	c.username = username
+}
+
 func (c *Client) Close() {
+	c.mu.Lock()
+	pc := c.pc
+	c.mu.Unlock()
+	if pc != nil {
+		pc.Close()
+	}
 	c.conn.Close()
 }
 
@@ -193,7 +214,12 @@ func (c *Client) ReadMessages() error {
 
 		switch packet.Type {
 		case protocol.TypeText:
-			fmt.Printf("\r%s\n> ", string(packet.Payload))
+			var msg ChatMessage
+			if err := json.Unmarshal(packet.Payload, &msg); err == nil && msg.From != "" {
+				fmt.Printf("\r%s: %s\n> ", msg.From, msg.Text)
+			} else {
+				fmt.Printf("\r%s\n> ", string(packet.Payload))
+			}
 		case protocol.TypeMidi:
 			if c.midiOutput != nil {
 				if err := c.midiOutput(packet.Payload); err != nil {
@@ -248,20 +274,35 @@ func (c *Client) ChatLoop(ctx context.Context, stdinCh <-chan string) {
 				c.Quit()
 				return
 			}
+			msg := ChatMessage{From: c.username, Text: line}
+			marshaledMsg, err := json.Marshal(msg)
+			if err != nil {
+				log.Printf("failed to marshal message")
+				continue
+			}
 			c.mu.Lock()
 			send := c.chatSend
 			c.mu.Unlock()
 			if send != nil {
-				if err := c.chatSend([]byte(line)); err != nil {
-					log.Printf("could not send message")
-					return
+				if err := send(marshaledMsg); err != nil {
+					log.Printf("WebRTC send failed, retrying via TCP")
+					// DataChannel is dead but OnConnectionStateChange may not have fired yet.
+					// Clear chatSend now so subsequent messages go via TCP immediately.
+					c.mu.Lock()
+					c.chatSend = nil
+					c.mu.Unlock()
+					if err := protocol.WriteMessage(c.conn, protocol.TypeText, marshaledMsg); err != nil {
+						log.Printf("could not send message")
+						return
+					}
 				}
 			} else {
-				if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte(line)); err != nil {
+				if err := protocol.WriteMessage(c.conn, protocol.TypeText, marshaledMsg); err != nil {
 					log.Printf("could not send message")
 					return
 				}
 			}
+			fmt.Printf("%s: %s\n", c.username, line)
 			fmt.Print("> ")
 		case <-ctx.Done():
 			return

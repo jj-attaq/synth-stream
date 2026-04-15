@@ -206,13 +206,7 @@ func (s *Server) routeToPartner(client *Client, packet protocol.Packet) error {
 			return err
 		}
 
-		payload := packet.Payload
-		if packet.Type == protocol.TypeText {
-			prefix := append([]byte(client.Username), []byte(": ")...)
-			payload = append(prefix, payload...)
-		}
-
-		if err := protocol.WriteMessage(partner.Conn, packet.Type, payload); err != nil {
+		if err := protocol.WriteMessage(partner.Conn, packet.Type, packet.Payload); err != nil {
 			return err
 		}
 		log.Printf("%s sent %d bytes (type 0x%02x)", client.Username, len(packet.Payload), packet.Type)

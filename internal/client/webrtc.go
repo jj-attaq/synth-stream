@@ -44,17 +44,19 @@ func (c *Client) StartWebRTC(onReady func(send func([]byte) error)) (retErr erro
 	if err != nil {
 		return fmt.Errorf("create peer connection: %w", err)
 	}
-	defer func() {
-		if retErr != nil {
-			pc.Close()
-		}
-	}()
+
+	c.mu.Lock()
+	c.pc = pc
+	c.mu.Unlock()
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		// if state == webrtc.PeerConnectionStateFailed {
-		// 	onFailed()
-		// }
 		log.Printf("WebRTC: %s", state)
+		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected || state == webrtc.PeerConnectionStateClosed {
+			c.mu.Lock()
+			c.chatSend = nil
+			c.mu.Unlock()
+			log.Printf("WebRTC connection lost — falling back to TCP relay for chat")
+		}
 	})
 
 	// setupMidiChannel wires OnOpen and OnMessage onto the MIDI DataChannel.
@@ -76,8 +78,6 @@ func (c *Client) StartWebRTC(onReady func(send func([]byte) error)) (retErr erro
 		})
 	}
 
-	// OnOpen: store dc.Send in c.chatSend so ChatLoop uses it instead of TCP
-	// OnMessage: print the received message (same format as ReadMessages TypeText: "\r%s\n> ")
 	setupChatChannel := func(dc *webrtc.DataChannel) {
 		dc.OnOpen(func() {
 			c.mu.Lock()
@@ -85,7 +85,12 @@ func (c *Client) StartWebRTC(onReady func(send func([]byte) error)) (retErr erro
 			c.mu.Unlock()
 		})
 		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-			fmt.Printf("\r%s\n> ", msg.Data)
+			var chat ChatMessage
+			if err := json.Unmarshal(msg.Data, &chat); err == nil && chat.From != "" {
+				fmt.Printf("\r%s: %s\n> ", chat.From, chat.Text)
+			} else {
+				fmt.Printf("\r%s\n> ", msg.Data)
+			}
 		})
 	}
 

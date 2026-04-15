@@ -54,7 +54,7 @@ func login(username, password, apiAddress string) (string, error) {
 	return result.Token, nil
 }
 
-func connect(token, address string,
+func connect(token, username, address string,
 	inPortNumber int,
 	localSend midi.MidiSender,
 	sessionCode string,
@@ -68,6 +68,7 @@ func connect(token, address string,
 	if err != nil {
 		return "", err
 	}
+	c.SetUsername(username)
 	defer c.Close()
 
 	// SetMidiOutput must be called before negotiateP2P — ReadMessages starts inside
@@ -262,7 +263,7 @@ func main() {
 			time.Sleep(2 * time.Second)
 			fmt.Printf("reconnecting (attempt %d/3)...\n", attempts+1)
 		}
-		code, err := connect(token, host+":"+os.Getenv("PORT"), inPortNumber, localSend, sessionCode, stdinCh, sigCh)
+		code, err := connect(token, username, host+":"+os.Getenv("PORT"), inPortNumber, localSend, sessionCode, stdinCh, sigCh)
 		sessionCode = code
 		if err == nil {
 			break
