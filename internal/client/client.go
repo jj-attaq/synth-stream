@@ -10,17 +10,20 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jj-attaq/synth-stream/internal/protocol"
 )
 
 type Client struct {
+	mu          sync.Mutex
 	conn        net.Conn
 	token       string
 	sessionCode string
 	isOfferer   bool
 	midiOutput  func([]byte) error
+	chatSend    func([]byte) error
 	pingCh      chan time.Duration
 	sigCh       chan protocol.Packet
 	quit        bool
@@ -245,9 +248,19 @@ func (c *Client) ChatLoop(ctx context.Context, stdinCh <-chan string) {
 				c.Quit()
 				return
 			}
-			if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte(line)); err != nil {
-				log.Printf("could not send message")
-				return
+			c.mu.Lock()
+			send := c.chatSend
+			c.mu.Unlock()
+			if send != nil {
+				if err := c.chatSend([]byte(line)); err != nil {
+					log.Printf("could not send message")
+					return
+				}
+			} else {
+				if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte(line)); err != nil {
+					log.Printf("could not send message")
+					return
+				}
 			}
 			fmt.Print("> ")
 		case <-ctx.Done():

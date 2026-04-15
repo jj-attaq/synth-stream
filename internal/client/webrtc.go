@@ -57,10 +57,10 @@ func (c *Client) StartWebRTC(onReady func(send func([]byte) error)) (retErr erro
 		log.Printf("WebRTC: %s", state)
 	})
 
-	// setupDataChannel wires OnOpen and OnMessage onto a DataChannel.
+	// setupMidiChannel wires OnOpen and OnMessage onto the MIDI DataChannel.
 	// Called by both paths: offerer passes dc from CreateDataChannel,
 	// answerer passes dc received in OnDataChannel.
-	setupDataChannel := func(dc *webrtc.DataChannel) {
+	setupMidiChannel := func(dc *webrtc.DataChannel) {
 		dc.OnOpen(func() {
 			onReady(func(data []byte) error {
 				return dc.Send(data)
@@ -73,6 +73,19 @@ func (c *Client) StartWebRTC(onReady func(send func([]byte) error)) (retErr erro
 					log.Printf("p2p midi playback error: %v", err)
 				}
 			}
+		})
+	}
+
+	// OnOpen: store dc.Send in c.chatSend so ChatLoop uses it instead of TCP
+	// OnMessage: print the received message (same format as ReadMessages TypeText: "\r%s\n> ")
+	setupChatChannel := func(dc *webrtc.DataChannel) {
+		dc.OnOpen(func() {
+			c.mu.Lock()
+			c.chatSend = dc.Send
+			c.mu.Unlock()
+		})
+		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+			fmt.Printf("\r%s\n> ", msg.Data)
 		})
 	}
 
@@ -98,12 +111,17 @@ func (c *Client) StartWebRTC(onReady func(send func([]byte) error)) (retErr erro
 
 		//   1. CreateDataChannel("midi", &webrtc.DataChannelInit{Ordered: &false})
 		ordered := false
-		dc, err := pc.CreateDataChannel("midi", &webrtc.DataChannelInit{Ordered: &ordered})
+		midiDC, err := pc.CreateDataChannel("midi", &webrtc.DataChannelInit{Ordered: &ordered})
 		if err != nil {
-			return fmt.Errorf("CreateDataChannel: %w", err)
+			return fmt.Errorf("CreateDataChannel midi: %w", err)
 		}
-		//   2. setupDataChannel(dc)
-		setupDataChannel(dc)
+		setupMidiChannel(midiDC)
+
+		chatDC, err := pc.CreateDataChannel("chat", nil)
+		if err != nil {
+			return fmt.Errorf("CreateDataChannel chat: %w", err)
+		}
+		setupChatChannel(chatDC)
 
 		//   3. CreateOffer -> SetLocalDescription -> GatheringCompletePromise
 		offer, err := pc.CreateOffer(nil)
@@ -130,8 +148,14 @@ func (c *Client) StartWebRTC(onReady func(send func([]byte) error)) (retErr erro
 		}
 	} else {
 		// Answerer path (c.IsOfferer() == false):
-		//   1. pc.OnDataChannel(func(dc) { setupDataChannel(dc) })
-		pc.OnDataChannel(func(dc *webrtc.DataChannel) { setupDataChannel(dc) })
+		pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+			switch dc.Label() {
+			case "midi":
+				setupMidiChannel(dc)
+			case "chat":
+				setupChatChannel(dc)
+			}
+		})
 		//   2. recvSDP() -> SetRemoteDescription
 		offer, err := recvSDP()
 		if err != nil {
