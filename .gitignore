@@ -1,4 +1,5 @@
 .DS_Store
+index.md
 *.env
 *.pem
 mentor

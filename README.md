@@ -34,7 +34,16 @@ IAC Bus 3 — Bobby's controller → synth-stream captures here (input)
 IAC Bus 4 — synth-stream writes here → Bobby's DAW receives (output)
 ```
 
-For a two-machine test, each machine only needs 2 buses.
+**Two-machine setup (two musicians on separate computers):**
+
+Each machine only needs 2 IAC buses. MIDI channel separation is required so each musician only hears their partner's MIDI, not their own coming back at them:
+
+- **User 1:** send track outputs on MIDI channel 1, receive track listens on MIDI channel 2
+- **User 2:** send track outputs on MIDI channel 2, receive track listens on MIDI channel 1
+
+Set both receive tracks to the same IAC bus (e.g. IAC Bus 2) but different channels as above. IAC buses are local to each machine — the synth-stream client handles transport between them.
+
+**Local monitoring:** if you want to hear your own MIDI as you play (in addition to your partner's), set your send track's Monitor to **In** and route its audio to Main. synth-stream only relays MIDI to your partner — local monitoring is handled entirely by the DAW.
 
 ---
 
