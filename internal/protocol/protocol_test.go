@@ -12,6 +12,7 @@ func TestMarshal_ValidTypes(t *testing.T) {
 		payload []byte
 	}{
 		{"TypeText", TypeText, []byte("hello")},
+		{"TypeSystem", TypeSystem, []byte("welcome alice")},
 		{"TypeMidi", TypeMidi, []byte{0x90, 0x3C, 0x7F}},
 		{"TypePing", TypePing, []byte{0, 1, 2, 3, 4, 5, 6, 7}},
 		{"empty payload", TypeText, []byte{}},

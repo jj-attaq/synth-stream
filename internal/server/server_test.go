@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jj-attaq/synth-stream/internal/auth"
 	"github.com/jj-attaq/synth-stream/internal/protocol"
 )
@@ -15,7 +16,7 @@ const testSecret = "test-secret"
 
 func makeTestToken(t *testing.T, username string) []byte {
 	t.Helper()
-	token, err := auth.MakeJWT(username, testSecret, time.Hour)
+	token, err := auth.MakeJWT(uuid.New(), username, testSecret, time.Hour)
 	if err != nil {
 		t.Fatalf("MakeJWT: %v", err)
 	}
@@ -95,7 +96,7 @@ func TestRegisterConnection_Valid(t *testing.T) {
 		result <- c
 	}()
 
-	protocol.WriteMessage(clientConn, protocol.TypeText, makeTestToken(t, "alice"))
+	protocol.WriteMessage(clientConn, protocol.TypeSystem, makeTestToken(t, "alice"))
 
 	packet, err := protocol.ReadMessage(clientConn)
 	if err != nil {
@@ -119,7 +120,7 @@ func TestRegisterConnection_InvalidToken(t *testing.T) {
 	s := newTestServer()
 	go s.registerConnection(serverConn)
 
-	protocol.WriteMessage(clientConn, protocol.TypeText, []byte("not-a-valid-jwt"))
+	protocol.WriteMessage(clientConn, protocol.TypeSystem, []byte("not-a-valid-jwt"))
 
 	packet, err := protocol.ReadMessage(clientConn)
 	if err != nil {
@@ -140,7 +141,7 @@ func TestRegisterConnection_DuplicateUsername(t *testing.T) {
 
 	go s.registerConnection(serverConn)
 
-	protocol.WriteMessage(clientConn, protocol.TypeText, makeTestToken(t, "alice"))
+	protocol.WriteMessage(clientConn, protocol.TypeSystem, makeTestToken(t, "alice"))
 
 	packet, err := protocol.ReadMessage(clientConn)
 	if err != nil {
@@ -185,7 +186,7 @@ func TestCleanupClient_ParksInDisconnectedSlots(t *testing.T) {
 	}
 }
 
-func TestRouteToPartner_TextPrependsUsername(t *testing.T) {
+func TestRouteToPartner_TextForwardedRaw(t *testing.T) {
 	c1Conn, p1 := net.Pipe()
 	c2Conn, p2 := net.Pipe()
 	defer c1Conn.Close()
@@ -204,15 +205,15 @@ func TestRouteToPartner_TextPrependsUsername(t *testing.T) {
 		done <- packet
 	}()
 
-	packet := protocol.Packet{Type: protocol.TypeText, Payload: []byte("hello")}
+	payload := []byte(`{"from":"alice","text":"hello"}`)
+	packet := protocol.Packet{Type: protocol.TypeText, Payload: payload}
 	if err := s.routeToPartner(c1, packet); err != nil {
 		t.Fatalf("routeToPartner() error = %v", err)
 	}
 
 	received := <-done
-	want := "alice: hello"
-	if string(received.Payload) != want {
-		t.Errorf("payload = %q, want %q", string(received.Payload), want)
+	if string(received.Payload) != string(payload) {
+		t.Errorf("payload = %q, want %q", string(received.Payload), string(payload))
 	}
 }
 

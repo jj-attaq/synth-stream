@@ -14,6 +14,7 @@ import (
 
 const (
 	TypeText         = 0x01
+	TypeSystem       = 0x02
 	TypeMidi         = 0x10
 	TypeAudio        = 0x20
 	TypePing         = 0x30
@@ -24,6 +25,7 @@ const (
 
 var validTypes = map[byte]struct{}{
 	TypeText:         {},
+	TypeSystem:       {},
 	TypeMidi:         {},
 	TypeAudio:        {},
 	TypePing:         {},

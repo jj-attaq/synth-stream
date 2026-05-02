@@ -79,7 +79,7 @@ func (c *Client) Close() {
 }
 
 func (c *Client) Handshake() error {
-	if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte(c.token)); err != nil {
+	if err := protocol.WriteMessage(c.conn, protocol.TypeSystem, []byte(c.token)); err != nil {
 		return fmt.Errorf("could not send token: %w", err)
 	}
 
@@ -104,7 +104,7 @@ func (c *Client) SessionSetup(stdinCh <-chan string) error {
 	choice := <-stdinCh
 	switch choice {
 	case "c":
-		if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte("session:create")); err != nil {
+		if err := protocol.WriteMessage(c.conn, protocol.TypeSystem, []byte("session:create")); err != nil {
 			return fmt.Errorf("could not create session: %w", err)
 		}
 		for {
@@ -113,7 +113,7 @@ func (c *Client) SessionSetup(stdinCh <-chan string) error {
 				return fmt.Errorf("read session response: %w", err)
 			}
 
-			if packet.Type != protocol.TypeText {
+			if packet.Type != protocol.TypeSystem {
 				continue
 			}
 
@@ -135,7 +135,7 @@ func (c *Client) SessionSetup(stdinCh <-chan string) error {
 	case "j":
 		fmt.Print("Enter Session ID code: ")
 		code := <-stdinCh
-		if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte("session:join:"+code)); err != nil {
+		if err := protocol.WriteMessage(c.conn, protocol.TypeSystem, []byte("session:join:"+code)); err != nil {
 			return fmt.Errorf("could not join session: %w", err)
 		}
 
@@ -173,7 +173,7 @@ func (c *Client) IsQuit() bool {
 // Quit sends session:leave to the server and closes the connection cleanly.
 // Called by both the /quit command and the SIGINT handler.
 func (c *Client) Quit() {
-	protocol.WriteMessage(c.conn, protocol.TypeText, []byte("session:leave"))
+	protocol.WriteMessage(c.conn, protocol.TypeSystem, []byte("session:leave"))
 	c.quit = true
 	c.Close()
 }
@@ -185,7 +185,7 @@ func (c *Client) SigCh() <-chan protocol.Packet {
 // Rejoin sends session:join with the stored code without prompting the user.
 // Used when reconnecting within the same process where the code is already known.
 func (c *Client) Rejoin(code string) error {
-	if err := protocol.WriteMessage(c.conn, protocol.TypeText, []byte("session:join:"+code)); err != nil {
+	if err := protocol.WriteMessage(c.conn, protocol.TypeSystem, []byte("session:join:"+code)); err != nil {
 		return fmt.Errorf("rejoin send: %w", err)
 	}
 	packet, err := protocol.ReadMessage(c.conn)
@@ -215,12 +215,12 @@ func (c *Client) ReadMessages() error {
 		}
 
 		switch packet.Type {
+		case protocol.TypeSystem:
+			fmt.Printf("\r%s\n> ", string(packet.Payload))
 		case protocol.TypeText:
 			var msg ChatMessage
 			if err := json.Unmarshal(packet.Payload, &msg); err == nil && msg.From != "" {
 				fmt.Printf("\r%s: %s\n> ", msg.From, msg.Text)
-			} else {
-				fmt.Printf("\r%s\n> ", string(packet.Payload))
 			}
 		case protocol.TypeMidi:
 			if c.midiOutput != nil {

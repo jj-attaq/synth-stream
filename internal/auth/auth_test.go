@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func TestCheckPasswordHash(t *testing.T) {
@@ -87,7 +89,7 @@ func TestGetBearerToken(t *testing.T) {
 }
 
 func TestMakeJWT(t *testing.T) {
-	token, err := MakeJWT("alice", "secret", time.Hour)
+	token, err := MakeJWT(uuid.New(), "alice", "secret", time.Hour)
 	if err != nil {
 		t.Fatalf("MakeJWT() unexpected error: %v", err)
 	}
@@ -97,8 +99,9 @@ func TestMakeJWT(t *testing.T) {
 }
 
 func TestValidateJWT(t *testing.T) {
-	validToken, _ := MakeJWT("alice", "secret", time.Hour)
-	expiredToken, _ := MakeJWT("alice", "secret", -1*time.Second)
+	id := uuid.New()
+	validToken, _ := MakeJWT(id, "alice", "secret", time.Hour)
+	expiredToken, _ := MakeJWT(id, "alice", "secret", -1*time.Second)
 
 	tests := []struct {
 		name         string

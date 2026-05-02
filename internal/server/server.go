@@ -52,7 +52,7 @@ func (s *Server) handleSessionCreate(client *Client) (string, error) {
 	s.pendingSessions[code] = client
 	s.mu.Unlock()
 
-	if err := protocol.WriteMessage(client.Conn, protocol.TypeText, []byte("session:created:"+code)); err != nil {
+	if err := protocol.WriteMessage(client.Conn, protocol.TypeSystem, []byte("session:created:"+code)); err != nil {
 		return "", fmt.Errorf("could not send session code: %w", err)
 	}
 	log.Printf("%s created session %s\n", client.Username, code)
@@ -77,8 +77,8 @@ func (s *Server) handleSessionJoin(joiner *Client, code string) error {
 		s.mu.Unlock()
 
 		partner, _ := joiner.Session.GetPartner(joiner)
-		protocol.WriteMessage(partner.Conn, protocol.TypeText, []byte(joiner.Username+" has reconnected"))
-		if err := protocol.WriteMessage(joiner.Conn, protocol.TypeText, []byte("paired "+partner.Username)); err != nil {
+		protocol.WriteMessage(partner.Conn, protocol.TypeSystem, []byte(joiner.Username+" has reconnected"))
+		if err := protocol.WriteMessage(joiner.Conn, protocol.TypeSystem, []byte("paired "+partner.Username)); err != nil {
 			return fmt.Errorf("send paired to rejoiner: %w", err)
 		}
 		log.Printf("%s reconnected to session", joiner.Username)
@@ -89,7 +89,7 @@ func (s *Server) handleSessionJoin(joiner *Client, code string) error {
 	creator, exists := s.pendingSessions[code]
 	if !exists {
 		s.mu.Unlock()
-		protocol.WriteMessage(joiner.Conn, protocol.TypeText, []byte("error:session not found"))
+		protocol.WriteMessage(joiner.Conn, protocol.TypeSystem, []byte("error:session not found"))
 		return fmt.Errorf("session %s not found", code)
 	}
 	delete(s.pendingSessions, code)
@@ -104,10 +104,10 @@ func (s *Server) handleSessionJoin(joiner *Client, code string) error {
 	s.addSessionLocked(session)
 	s.mu.Unlock()
 
-	if err := protocol.WriteMessage(joiner.Conn, protocol.TypeText, []byte("paired "+creator.Username)); err != nil {
+	if err := protocol.WriteMessage(joiner.Conn, protocol.TypeSystem, []byte("paired "+creator.Username)); err != nil {
 		return fmt.Errorf("send paired to joiner: %w", err)
 	}
-	if err := protocol.WriteMessage(creator.Conn, protocol.TypeText, []byte("paired "+joiner.Username)); err != nil {
+	if err := protocol.WriteMessage(creator.Conn, protocol.TypeSystem, []byte("paired "+joiner.Username)); err != nil {
 		return fmt.Errorf("send paired to creator: %w", err)
 	}
 
@@ -226,8 +226,8 @@ func (s *Server) registerConnection(conn net.Conn) (*Client, error) {
 		}
 		return nil, err
 	}
-	if message.Type != protocol.TypeText {
-		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:first message must be text"))
+	if message.Type != protocol.TypeSystem {
+		protocol.WriteMessage(conn, protocol.TypeSystem, []byte("error:first message must be text"))
 		return nil, fmt.Errorf("first message must be text")
 	}
 
@@ -235,18 +235,18 @@ func (s *Server) registerConnection(conn net.Conn) (*Client, error) {
 
 	username, err := auth.ValidateJWT(token, s.jwtSecret)
 	if err != nil {
-		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:invalid token"))
+		protocol.WriteMessage(conn, protocol.TypeSystem, []byte("error:invalid token"))
 		return nil, fmt.Errorf("invalid token: %w", err)
 	}
 
 	client := NewClient(username, conn)
 
 	if errMsg := s.registerClient(client); errMsg != "" {
-		protocol.WriteMessage(conn, protocol.TypeText, []byte("error:"+errMsg))
+		protocol.WriteMessage(conn, protocol.TypeSystem, []byte("error:"+errMsg))
 		return nil, fmt.Errorf("%s", errMsg)
 	}
 
-	if err := protocol.WriteMessage(conn, protocol.TypeText, []byte("welcome "+client.Username)); err != nil {
+	if err := protocol.WriteMessage(conn, protocol.TypeSystem, []byte("welcome "+client.Username)); err != nil {
 		log.Printf("Could not welcome user")
 		return nil, err
 	}
@@ -261,8 +261,8 @@ func (s *Server) performSessionSetup(client *Client) error {
 		}
 		return err
 	}
-	if sessionCmd.Type != protocol.TypeText {
-		protocol.WriteMessage(client.Conn, protocol.TypeText, []byte("error:session command must be text"))
+	if sessionCmd.Type != protocol.TypeSystem {
+		protocol.WriteMessage(client.Conn, protocol.TypeSystem, []byte("error:session command must be text"))
 		return fmt.Errorf("session command must be text")
 	}
 
@@ -286,7 +286,7 @@ func (s *Server) performSessionSetup(client *Client) error {
 				return nil
 			case <-timeout.C:
 				s.removePendingSession(sessionCode)
-				protocol.WriteMessage(client.Conn, protocol.TypeText, []byte("error:session expired"))
+				protocol.WriteMessage(client.Conn, protocol.TypeSystem, []byte("error:session expired"))
 				return fmt.Errorf("session expired")
 			case <-ticker.C:
 				// Writing to a dead TCP socket fails immediately, detecting a dropped
@@ -304,7 +304,7 @@ func (s *Server) performSessionSetup(client *Client) error {
 			return err
 		}
 	default:
-		protocol.WriteMessage(client.Conn, protocol.TypeText, []byte("error:unknown session command"))
+		protocol.WriteMessage(client.Conn, protocol.TypeSystem, []byte("error:unknown session command"))
 		return fmt.Errorf("unknown session command: %s", cmd)
 	}
 	return nil
@@ -350,7 +350,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 		// Intentional quit: tear down cleanly so neither partner lands in
 		// disconnectedSessions, preventing a false reconnect next session.
-		if message.Type == protocol.TypeText && string(message.Payload) == "session:leave" {
+		if message.Type == protocol.TypeSystem && string(message.Payload) == "session:leave" {
 			s.teardownSession(client)
 			return
 		}
@@ -371,7 +371,7 @@ func (s *Server) teardownSession(client *Client) {
 	}
 
 	partner, _ := client.Session.GetPartner(client)
-	protocol.WriteMessage(partner.Conn, protocol.TypeText, []byte(client.Username+" has left the session"))
+	protocol.WriteMessage(partner.Conn, protocol.TypeSystem, []byte(client.Username+" has left the session"))
 
 	session := client.Session
 	client.Session = nil
@@ -390,7 +390,7 @@ func (s *Server) cleanupClient(client *Client) {
 	partner, _ := client.Session.GetPartner(client)
 
 	msg := []byte(client.Username + " has been disconnected, 2 minutes to reconnect.\n")
-	if err := protocol.WriteMessage(partner.Conn, protocol.TypeText, msg); err != nil {
+	if err := protocol.WriteMessage(partner.Conn, protocol.TypeSystem, msg); err != nil {
 		log.Printf("failed to notify %s of disconnect: %v", partner.Username, err)
 	}
 
@@ -421,7 +421,7 @@ func (s *Server) cleanupClient(client *Client) {
 			return
 		}
 		// Client never came back — clean up for real.
-		protocol.WriteMessage(partner.Conn, protocol.TypeText, []byte(client.Username+" has permanently disconnected"))
+		protocol.WriteMessage(partner.Conn, protocol.TypeSystem, []byte(client.Username+" has permanently disconnected"))
 		partner.Session = nil
 		s.removeSessionLocked(session)
 		delete(s.disconnectedSessions, client.Username)
